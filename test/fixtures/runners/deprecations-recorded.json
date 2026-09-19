@@ -1,0 +1,72 @@
+{
+  "_recorded": "2026-09-09T00:57:42.837Z",
+  "_endpoint": "GET /repos/{owner}/{repo}/actions/runners/deprecations/{version}",
+  "_note": "Verbatim live responses. Recorded against Booyaka101/runner-drift with a classic repo-scoped token.",
+  "responses": {
+    "2.325.0": {
+      "status": 200,
+      "body": {
+        "runner_version": "2.325.0",
+        "runtime_deprecates_at": "2025-09-11T13:58:34Z"
+      }
+    },
+    "2.329.0": {
+      "status": 200,
+      "body": {
+        "runner_version": "2.329.0",
+        "runtime_deprecates_at": "2026-01-23T17:10:35Z"
+      }
+    },
+    "2.334.0": {
+      "status": 200,
+      "body": {
+        "runner_version": "2.334.0",
+        "runtime_deprecates_at": "2026-08-10T17:08:55Z"
+      }
+    },
+    "2.335.0": {
+      "status": 200,
+      "body": {
+        "runner_version": "2.335.0",
+        "runtime_deprecates_at": "2026-08-14T16:59:37Z"
+      }
+    },
+    "2.335.1": {
+      "status": 200,
+      "body": {
+        "runner_version": "2.335.1",
+        "runtime_deprecates_at": "2026-09-24T15:30:55Z"
+      }
+    },
+    "2.336.0": {
+      "status": 200,
+      "body": {
+        "runner_version": "2.336.0",
+        "runtime_deprecates_at": "2026-11-05T08:04:55Z"
+      }
+    },
+    "2.337.0": {
+      "status": 200,
+      "body": {
+        "runner_version": "2.337.0",
+        "runtime_deprecates_at": null
+      }
+    },
+    "9.9.9": {
+      "status": 404,
+      "body": {
+        "message": "Not Found",
+        "documentation_url": "https://docs.github.com/rest/actions/self-hosted-runners#get-runner-version-end-of-life-schedule-for-a-repository",
+        "status": "404"
+      }
+    }
+  },
+  "listing": {
+    "url": "GET /repos/Booyaka101/runner-drift/actions/runners",
+    "status": 200,
+    "body": {
+      "total_count": 0,
+      "runners": []
+    }
+  }
+}

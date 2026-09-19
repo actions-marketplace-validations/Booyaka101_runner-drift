@@ -11,3 +11,6 @@ coverage/
 *.swp
 .env
 .env.local
+
+# Local build notes, not for the public repo
+PROGRESS.md

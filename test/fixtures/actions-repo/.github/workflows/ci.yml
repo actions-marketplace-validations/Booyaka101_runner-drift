@@ -1,0 +1,20 @@
+name: ci
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: acme/tools/setup@v2
+      - uses: acme/outer@v1
+      - uses: acme/loop@v1
+      - uses: acme/private@v1
+      - uses: docker://alpine:3.20
+      - uses: ./.github/actions/local-thing
+      - uses: acme/pinned@8f4b7f8452b1a2ee3bd35a08f1a1a62c76c8a2fa # v1.2.3
+      - name: no action here
+        run: echo "using: node20 is a red herring"
+
+  call:
+    uses: acme/flows/.github/workflows/release.yml@v3

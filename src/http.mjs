@@ -43,7 +43,7 @@ function authHeaders() {
   const token =
     process.env.GITHUB_TOKEN || process.env.GH_TOKEN || process.env.INPUT_GITHUB_TOKEN || '';
   const headers = {
-    'user-agent': 'runner-drift/1.0.2 (+https://github.com/Booyaka101/runner-drift)',
+    'user-agent': 'runner-drift/1.3.0 (+https://github.com/Booyaka101/runner-drift)',
     accept: 'application/vnd.github+json',
   };
   if (token) headers.authorization = `Bearer ${token}`;
@@ -80,6 +80,13 @@ export async function fetchText(url, { timeoutMs = 20000, allow404 = false } = {
     clearTimeout(timer);
   }
 
+  // A Response whose body is never read keeps its socket open, so a CLI that
+  // reports a failure and returns never exits — it just sits there holding the
+  // failure it already detected. Every branch below either returns or throws, so
+  // the failing body is drained here. The runtime lane makes a 404 routine
+  // (action.yml, then action.yaml), which is what turns this into a hot path.
+  if (!res.ok) await res.text().catch(() => {});
+
   if (res.status === 404) {
     const e = new NotFoundError(`Not found (404): ${url}`);
     if (allow404) return { ok: false, status: 404, text: null, error: e };
@@ -98,6 +105,14 @@ export async function fetchText(url, { timeoutMs = 20000, allow404 = false } = {
     throw new DriftError(`GitHub refused the request (HTTP 403): ${url}`, {
       code: 'FORBIDDEN',
       hint: RATE_LIMIT_HINT,
+    });
+  }
+  if (res.status === 401) {
+    throw new DriftError(`GitHub rejected the credentials (HTTP 401): ${url}`, {
+      code: 'UNAUTHORIZED',
+      hint:
+        'This endpoint needs a token. Set GITHUB_TOKEN (inside a workflow: ' +
+        'env: GITHUB_TOKEN: ${{ github.token }}), or unset an expired one.',
     });
   }
   if (!res.ok) {

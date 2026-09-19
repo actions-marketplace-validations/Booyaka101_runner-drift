@@ -11,7 +11,12 @@ test('deadline lines cite the source issue', () => {
     lines[0],
     'ubuntu-22.04 is fully unsupported on 2027-04-17; brownouts begin 2027-03-23 (source: actions/runner-images#14254)',
   );
-  assert.ok(lines.some((l) => l.includes('https://github.com/actions/runner-images/issues/14254')));
+  // Anchored rather than `.includes(url)`: a substring test against a URL reads
+  // as incomplete sanitization to CodeQL, and matching the end of the line is a
+  // tighter assertion anyway.
+  assert.ok(
+    lines.some((l) => /\bhttps:\/\/github\.com\/actions\/runner-images\/issues\/14254$/.test(l)),
+  );
   assert.ok(lines.some((l) => l.includes('brownout windows (14:00-00:00 UTC)')));
 });
 

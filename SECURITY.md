@@ -17,6 +17,7 @@ Please include what you found, how to reproduce it, and what an attacker gets ou
 Reads your workflows and the public runner-images manifests. It changes nothing in your repo unless you ask it to.
 
 - **It reads public runner-image manifests** over HTTPS and your own workflow files from disk. It sends nothing.
+- **`runner-drift runners` and `guard --fail-on-deprecation` additionally read your self-hosted runner listing**, which needs a token with administration read (`GITHUB_TOKEN` / `GH_TOKEN`). That token is sent as a bearer header to `api.github.com` and nowhere else, the allowlist in `src/http.mjs` refuses every other host, and it is never written to the lock file, the step summary or the log. Runner names appear in the output, so keep in mind that a public job summary will show them.
 
 ## Scope
 

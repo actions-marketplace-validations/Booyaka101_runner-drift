@@ -32,8 +32,23 @@ import {
   retirementFindings,
   retirementAnnotations,
   retirementSummaryMarkdown,
+  runnersReport,
+  runnersAnnotations,
+  runnersSummaryMarkdown,
+  actionsReport,
+  actionsAnnotations,
+  actionsSummaryMarkdown,
   writeStepSummary,
+  writeOutput,
 } from './report.mjs';
+import { REF_STATUS, surveyActions } from './runtimes.mjs';
+import {
+  DEFAULT_DEPRECATION_WINDOW_DAYS,
+  SURVEY_STATUS,
+  resolveScope,
+  statusFails,
+  surveyRunners,
+} from './runners.mjs';
 
 export const EXIT_OK = 0;
 export const EXIT_DRIFT = 1;
@@ -46,7 +61,7 @@ async function version() {
     const pkg = JSON.parse(await readFile(path.join(HERE, '..', 'package.json'), 'utf8'));
     return pkg.version;
   } catch {
-    return '1.1.0';
+    return '1.3.0';
   }
 }
 
@@ -56,6 +71,11 @@ Usage:
   runner-drift init  [options]                 Record a baseline runner-lock.json
   runner-drift guard [options]                 (in-workflow) diff live runner vs the lock
   runner-drift plan  --from <label> --to <label>   Preview a runner label migration
+  runner-drift runners [--org <name> | --repo <owner/repo>]
+                                               Self-hosted runner agent versions vs
+                                               GitHub's end-of-support dates
+  runner-drift actions [path]                  Which uses: references stop working
+                                               when Node 20 leaves the runners
 
 Options:
   --workflows <path>    workflow dir or file          (default: .github/workflows)
@@ -66,8 +86,14 @@ Options:
   --to <label>          target runner label           (plan)
   --fail-on <level>     major | minor | any           (guard, default: never fail)
   --fail-on-retirement <days>   fail if a pinned label retires within N days (guard)
+  --org <name>          organization to survey             (runners)
+  --repo <owner/repo>   repository to survey               (runners, default: $GITHUB_REPOSITORY)
+  --fail-on-deprecation <days>  fail if a runner version's support ends within N days
+                                (runners, guard; default window ${DEFAULT_DEPRECATION_WINDOW_DAYS})
+  --warn-only           report but always exit 0             (actions)
+  --fail-on-unknown     fail when a uses: cannot be resolved (actions)
   --json                machine-readable output
-  --no-summary          do not write $GITHUB_STEP_SUMMARY (guard)
+  --no-summary          do not write $GITHUB_STEP_SUMMARY (guard, runners, actions)
   --no-update-lock      do not rewrite the lock file  (guard)
   -h, --help            this text
   -v, --version         print version
@@ -78,7 +104,7 @@ Known tools:  ${knownTools().join(', ')}
 Docs: https://github.com/Booyaka101/runner-drift
 `;
 
-const OPTIONS = {
+export const OPTIONS = {
   workflows: { type: 'string' },
   'lock-file': { type: 'string' },
   tools: { type: 'string' },
@@ -87,12 +113,33 @@ const OPTIONS = {
   to: { type: 'string' },
   'fail-on': { type: 'string' },
   'fail-on-retirement': { type: 'string' },
+  'fail-on-deprecation': { type: 'string' },
+  org: { type: 'string' },
+  repo: { type: 'string' },
+  'warn-only': { type: 'boolean', default: false },
+  'fail-on-unknown': { type: 'boolean', default: false },
   json: { type: 'boolean', default: false },
   summary: { type: 'boolean', default: true },
   'update-lock': { type: 'boolean', default: true },
+  // parseArgs has no `--no-` negation, so the documented negative forms have to
+  // be declared in their own right and folded in by resolveNegations().
+  'no-summary': { type: 'boolean', default: false },
+  'no-update-lock': { type: 'boolean', default: false },
   help: { type: 'boolean', short: 'h', default: false },
   version: { type: 'boolean', short: 'v', default: false },
 };
+
+/** `--no-summary` -> `summary: false`, for each documented negative form. */
+function resolveNegations(opts) {
+  for (const [negative, positive] of [
+    ['no-summary', 'summary'],
+    ['no-update-lock', 'update-lock'],
+  ]) {
+    if (opts[negative]) opts[positive] = false;
+    delete opts[negative];
+  }
+  return opts;
+}
 
 /* ------------------------------------------------------------------ shared */
 
@@ -139,18 +186,35 @@ function out(stream, line) {
   stream.write(`${line}\n`);
 }
 
+/** A `--fail-on-*` threshold in whole days, or null once the error is reported. */
+function wholeDays(value, flag, io) {
+  const raw = String(value);
+  if (!/^\d+$/.test(raw)) {
+    out(io.stderr, `${flag} needs a whole number of days >= 0 (got "${raw}")`);
+    return null;
+  }
+  return Number(raw);
+}
+
+/** One deduped stderr line per finding, for whichever lane produced them. */
+function summarise(io, items, keyOf, lineOf) {
+  const seen = new Set();
+  for (const item of items) {
+    const key = keyOf(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out(io.stderr, lineOf(item));
+  }
+}
+
 /**
  * `--fail-on-retirement`: every pinned label that retires or browns out inside
  * the window. Reads the workflow files alone, so it works in a lint job with no
  * lock file and no hosted runner. Returns null on a bad value, already reported.
  */
 async function checkRetirement(opts, io, now) {
-  const raw = String(opts['fail-on-retirement']);
-  if (!/^\d+$/.test(raw)) {
-    out(io.stderr, `--fail-on-retirement needs a whole number of days >= 0 (got "${raw}")`);
-    return null;
-  }
-  const days = Number(raw);
+  const days = wholeDays(opts['fail-on-retirement'], '--fail-on-retirement', io);
+  if (days === null) return null;
   const scanned = await detect(opts.workflows ?? path.join('.github', 'workflows'));
   if (scanned.missing) {
     const msg = `No workflow directory at ${scanned.dir} — no pinned labels to check for retirement.`;
@@ -168,17 +232,62 @@ async function checkRetirement(opts, io, now) {
 
 /** One stderr line per retiring label, whatever else the run reported. */
 function reportRetirement(io, { days, findings }) {
-  const seen = new Set();
-  for (const { status: s } of findings) {
-    if (seen.has(s.label)) continue;
-    seen.add(s.label);
-    out(
-      io.stderr,
+  summarise(
+    io,
+    findings,
+    (f) => f.status.label,
+    ({ status: s }) =>
       s.retired
         ? `runner-drift: ${s.label} has been fully unsupported since ${s.fullyUnsupported} (retired ${Math.abs(s.daysToUnsupported)} days ago) and --fail-on-retirement ${days} is set.`
         : `runner-drift: ${s.label} is fully unsupported on ${s.fullyUnsupported} (${s.daysToUnsupported} days) and --fail-on-retirement ${days} is set.`,
-    );
+  );
+}
+
+/** The same, one line per runner version whose support window has closed. */
+function reportDeprecation(io, survey) {
+  summarise(
+    io,
+    survey.groups.filter((g) => statusFails(g.status, { failOn: survey.failOn })),
+    (g) => g.version,
+    (g) => {
+      const fleet = `${g.count} self-hosted runner(s) on ${g.version}`;
+      const because = survey.failOn
+        ? ` and --fail-on-deprecation ${survey.windowDays} is set`
+        : '';
+      if (g.runtime) {
+        return g.runtime.past
+          ? `runner-drift: ${fleet} lost runtime support on ${g.runtime.date} (${Math.abs(g.runtime.days)} days ago) — jobs are no longer queued to them.`
+          : `runner-drift: ${fleet} lose runtime support on ${g.runtime.date} (${g.runtime.days} days)${because}.`;
+      }
+      return g.registration.past
+        ? `runner-drift: ${fleet} lost registration on ${g.registration.date} (${Math.abs(g.registration.days)} days ago) — they cannot reregister.`
+        : `runner-drift: ${fleet} lose registration on ${g.registration.date} (${g.registration.days} days)${because}.`;
+    },
+  );
+}
+
+/**
+ * The `runs-on:` targets on disk, so the runner lane can name the jobs an
+ * at-risk runner actually serves. Absent workflows are silent: `runners` is
+ * documented as needing no repository checkout.
+ */
+async function runsOnTargetsFor(opts) {
+  const scanned = await detect(opts.workflows ?? path.join('.github', 'workflows'));
+  return scanned.missing ? [] : scanned.runsOnTargets;
+}
+
+/**
+ * `--fail-on-deprecation`: the classification window, and whether it may change
+ * the exit code. Absent, the window is still GitHub's own 30 days so the report
+ * names what is coming; only the flag turns that into a failure.
+ * @returns {{days:number, failOn:boolean}|null} null once the error is reported
+ */
+function deprecationWindow(opts, io) {
+  if (opts['fail-on-deprecation'] === undefined) {
+    return { days: DEFAULT_DEPRECATION_WINDOW_DAYS, failOn: false };
   }
+  const days = wholeDays(opts['fail-on-deprecation'], '--fail-on-deprecation', io);
+  return days === null ? null : { days, failOn: true };
 }
 
 /* -------------------------------------------------------------------- init */
@@ -282,6 +391,39 @@ export async function runInit(opts, io = process) {
 
 /* ------------------------------------------------------------------- guard */
 
+/**
+ * `guard` on a self-hosted runner: this runner's own agent version against the
+ * deprecations API, matched by $RUNNER_NAME.
+ *
+ * Returns null whenever the lookup cannot even be attempted — no runner name, or
+ * no token. That is the common case, not an error path, and the caller then
+ * behaves exactly as it did before this lane existed.
+ */
+async function checkOwnRunner(opts, io, env, deps, window) {
+  const name = env.RUNNER_NAME;
+  const token = env.GITHUB_TOKEN || env.GH_TOKEN || env.INPUT_GITHUB_TOKEN;
+  if (!name || !token) return null;
+  const { scope } = resolveScope({ repo: opts.repo, org: opts.org, env });
+  if (!scope) return null;
+
+  const survey = await surveyRunners(scope, {
+    ...window,
+    now: deps.now ?? new Date(),
+    onlyRunnerName: name,
+    runsOnTargets: await runsOnTargetsFor(opts),
+    fetch: deps.fetchJson,
+  });
+  if (survey.status === SURVEY_STATUS.OK && !survey.groups.length) {
+    // Listed fine, but this runner is not in it: an enterprise-level runner, or
+    // one registered to a different scope. Nothing to report, nothing to fail.
+    return null;
+  }
+  for (const line of runnersAnnotations(survey)) out(io.stdout, line);
+  if (opts.summary) await writeStepSummary(runnersSummaryMarkdown(survey));
+  if (!opts.json) out(io.stdout, runnersReport(survey));
+  return survey;
+}
+
 export async function runGuard(opts, io = process, env = process.env, deps = {}) {
   const lockFile = opts['lock-file'] ?? DEFAULT_LOCK_FILE;
   const failOn = (opts['fail-on'] ?? 'none').toLowerCase();
@@ -289,6 +431,11 @@ export async function runGuard(opts, io = process, env = process.env, deps = {})
     out(io.stderr, `--fail-on must be one of: major, minor, any (got "${opts['fail-on']}")`);
     return EXIT_USAGE;
   }
+
+  // Validated up front, not where it is used: on a hosted runner the runner-agent
+  // check never runs, and a bad flag value must still be a usage error there.
+  const window = deprecationWindow(opts, io);
+  if (!window) return EXIT_USAGE;
 
   // Retirement runs before the drift logic: it needs only the workflow files,
   // so a lint job on any runner gets the deadline warning.
@@ -302,17 +449,37 @@ export async function runGuard(opts, io = process, env = process.env, deps = {})
   const imageVersion = env.ImageVersion ?? env.IMAGE_VERSION ?? null;
   const imageOS = env.ImageOS ?? env.IMAGE_OS ?? null;
 
+  // A GitHub-hosted runner has no agent version of its own to check, so the flag
+  // does nothing here. Say so: the action passes it to every job, and a flag that
+  // silently no-ops reads as a broken flag.
+  if (imageVersion && window.failOn) {
+    out(
+      io.stdout,
+      notice(
+        `--fail-on-deprecation ${window.days} does not apply on a GitHub-hosted runner: ` +
+          'the agent version is GitHub\'s to manage. Use `runner-drift runners` for a self-hosted fleet.',
+      ),
+    );
+  }
+
   if (!imageVersion) {
     const msg =
       'No ImageVersion environment variable — this is not a GitHub-hosted runner ' +
       '(self-hosted runner or local shell). runner-drift guard has nothing to compare; skipping.';
     out(io.stdout, notice(msg));
     out(io.stdout, msg);
-    if (retiring) {
-      reportRetirement(io, retiring);
-      return EXIT_DRIFT;
+    // No hosted image to diff, but a self-hosted runner still has an agent
+    // version with a date on it. Without a token this is a no-op and the skip
+    // above is the whole output, exactly as in 1.1.0.
+    const own = await checkOwnRunner(opts, io, env, deps, window);
+    if (opts.json && own) {
+      const payload = { runners: own };
+      if (retirement) payload.retirement = retirement;
+      out(io.stdout, JSON.stringify(payload, null, 2));
     }
-    return EXIT_OK;
+    if (retiring) reportRetirement(io, retiring);
+    if (own?.failing) reportDeprecation(io, own);
+    return retiring || own?.failing ? EXIT_DRIFT : EXIT_OK;
   }
 
   const lock = await readLock(lockFile);
@@ -610,6 +777,90 @@ export async function runPlan(opts, io = process, deps = {}) {
   return EXIT_OK;
 }
 
+/* ----------------------------------------------------------------- runners */
+
+/**
+ * `runner-drift runners` — the self-hosted agent-version lane. Needs no lock
+ * file and no runner of its own, so it runs as a plain lint job beside
+ * `guard --fail-on-retirement`.
+ */
+export async function runRunners(opts, io = process, env = process.env, deps = {}) {
+  const resolved = resolveScope({ repo: opts.repo, org: opts.org, env });
+  if (resolved.error) {
+    out(io.stderr, resolved.error);
+    if (resolved.detail) out(io.stderr, resolved.detail);
+    return EXIT_USAGE;
+  }
+  const window = deprecationWindow(opts, io);
+  if (!window) return EXIT_USAGE;
+
+  const survey = await surveyRunners(resolved.scope, {
+    ...window,
+    now: deps.now ?? new Date(),
+    runsOnTargets: await runsOnTargetsFor(opts),
+    fetch: deps.fetchJson,
+  });
+
+  for (const line of runnersAnnotations(survey)) out(io.stdout, line);
+  if (opts.summary) await writeStepSummary(runnersSummaryMarkdown(survey));
+  out(io.stdout, opts.json ? JSON.stringify(survey, null, 2) : runnersReport(survey));
+
+  if (survey.status !== SURVEY_STATUS.OK) return EXIT_OK;
+  if (!survey.failing) return EXIT_OK;
+  reportDeprecation(io, survey);
+  return EXIT_DRIFT;
+}
+
+/* ----------------------------------------------------------------- actions */
+
+/**
+ * `runner-drift actions` — the action-runtime lane. Resolves every `uses:` in
+ * the repository to the `runs.using` of the action it names, following
+ * composites into their own steps, so the report names the reference that
+ * actually stops working rather than the one you wrote.
+ */
+export async function runActions(opts, io = process, deps = {}) {
+  const survey = await surveyActions({
+    root: deps.root ?? '.',
+    workflows: opts.workflows ?? null,
+    now: deps.now ?? new Date(),
+    fetchText: deps.fetchText,
+    fetchJson: deps.fetchJson,
+  });
+
+  if (opts.json) {
+    out(io.stdout, JSON.stringify(survey, null, 2));
+  } else {
+    for (const line of actionsAnnotations(survey)) out(io.stdout, line);
+    out(io.stdout, actionsReport(survey));
+  }
+  if (opts.summary) await writeStepSummary(actionsSummaryMarkdown(survey));
+  await writeOutput('will-fail-count', String(survey.counts.fail));
+
+  const reasons = [];
+  if (survey.failing) {
+    const failing = survey.references.filter((r) => r.status === REF_STATUS.FAIL).map((r) => r.ref);
+    reasons.push(
+      `runner-drift: ${failing.length} action reference(s) stop working when Node 20 leaves the runners on ${survey.removalDate}: ${failing.join(', ')}`,
+    );
+  }
+  // Opt-in, because "could not resolve" is a proxy or a private repo as often as
+  // it is a real gap, and a tool that fails the build on a network blip is a
+  // tool people disable.
+  if (opts['fail-on-unknown'] && survey.counts.unknown) {
+    const unresolved = survey.references
+      .filter((r) => r.status === REF_STATUS.UNKNOWN)
+      .map((r) => r.ref);
+    reasons.push(
+      `runner-drift: ${unresolved.length} action reference(s) could not be resolved, and --fail-on-unknown treats unchecked as failing: ${unresolved.join(', ')}`,
+    );
+  }
+  for (const line of reasons) out(io.stderr, line);
+
+  if (!reasons.length) return EXIT_OK;
+  return opts['warn-only'] ? EXIT_OK : EXIT_DRIFT;
+}
+
 /* ---------------------------------------------------------------- dispatch */
 
 export async function main(argv = process.argv.slice(2), io = process) {
@@ -624,7 +875,7 @@ export async function main(argv = process.argv.slice(2), io = process) {
     out(io.stderr, USAGE);
     return EXIT_USAGE;
   }
-  const opts = parsed.values;
+  const opts = resolveNegations(parsed.values);
 
   if (opts.version) {
     out(io.stdout, await version());
@@ -643,6 +894,10 @@ export async function main(argv = process.argv.slice(2), io = process) {
         return await runGuard(opts, io);
       case 'plan':
         return await runPlan(opts, io);
+      case 'runners':
+        return await runRunners(opts, io);
+      case 'actions':
+        return await runActions(opts, io, { root: parsed.positionals[0] });
       case 'help':
         out(io.stdout, USAGE);
         return EXIT_OK;

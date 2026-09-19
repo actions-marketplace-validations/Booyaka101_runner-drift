@@ -1,6 +1,6 @@
 /** Programmatic entry point. The CLI is `src/cli.mjs`. */
 
-export { main, runInit, runGuard, runPlan, resolveManifestVersions, EXIT_OK, EXIT_DRIFT, EXIT_USAGE } from './cli.mjs';
+export { main, runInit, runGuard, runPlan, runRunners, runActions, resolveManifestVersions, EXIT_OK, EXIT_DRIFT, EXIT_USAGE } from './cli.mjs';
 export { parseManifest, loadManifest, manifestUrl, lookupTool } from './manifest.mjs';
 export {
   listManifestCommits,
@@ -12,29 +12,101 @@ export {
   attributeChanges,
   commitWindow,
 } from './history.mjs';
-export { detect, analyseWorkflow, extractLabels, extractLabelSites, extractRunScripts, commandsInScript } from './detect.mjs';
+export {
+  detect,
+  analyseWorkflow,
+  extractLabels,
+  extractLabelSites,
+  extractRunsOnTargets,
+  extractRunScripts,
+  extractUses,
+  setupTools,
+  commandsInScript,
+  indentOf,
+  readScalar,
+} from './detect.mjs';
 export { probeTool, probeTools, isProbeable, PROBES } from './probe.mjs';
-export { diffTool, diffToolMaps, shouldFail, maxSeverity, severityBetween, compareVersions } from './diff.mjs';
+export { diffTool, diffToolMaps, shouldFail, maxSeverity, severityBetween, compareVersions, compareDottedNumbers } from './diff.mjs';
 export { readLock, writeLock, emptyLock, toVersionMap, SCHEMA_VERSION, DEFAULT_LOCK_FILE } from './lock.mjs';
 export {
   planReport,
   stepSummaryMarkdown,
+  annotation,
+  annotationPath,
   annotations,
+  countdown,
+  dateWithCountdown,
   deadlineLines,
   daysUntil,
+  markdownTable,
+  notice,
   retirementFindings,
   retirementAnnotations,
   retirementSummaryMarkdown,
+  runnerGroupDetail,
+  runnersReport,
+  runnersAnnotations,
+  runnersSummaryMarkdown,
+  actionsReport,
+  actionsAnnotations,
+  actionsSummaryMarkdown,
+  referenceRows,
+  writeStepSummary,
+  writeOutput,
 } from './report.mjs';
+export {
+  FAILING_RUNTIMES,
+  MAX_COMPOSITE_DEPTH,
+  NODE20_REMOVAL_DATE,
+  NODE20_SOURCE,
+  NODE24_DEFAULT_DATE,
+  REF_STATUS,
+  classifyRuntime,
+  collectSources,
+  parseRef,
+  readRunsBlock,
+  surveyActions,
+  walkNodes,
+} from './runtimes.mjs';
+export {
+  DEFAULT_DEPRECATION_WINDOW_DAYS,
+  MINIMUM_REGISTRATION_VERSION,
+  RUNNER_STATUS,
+  SURVEY_STATUS,
+  GHES_NOTE,
+  AUTO_UPDATE_NOTE,
+  belowRegistrationMinimum,
+  classifyVersion,
+  compareRunnerVersions,
+  deprecationsUrl,
+  endpointLabel,
+  groupByVersion,
+  isRunnerVersion,
+  listRunners,
+  lookupDeprecation,
+  looksImagePinned,
+  matchRunsOnTargets,
+  orgScope,
+  releasePublishDates,
+  repoScope,
+  resolveScope,
+  runnersUrl,
+  statusFails,
+  statusRank,
+  surveyRunners,
+} from './runners.mjs';
 export {
   LABEL_PATHS,
   DEADLINES,
   IMAGE_OS_TO_LABEL,
+  API_BASE,
+  RAW_HOST,
   knownLabels,
   deadlineFor,
   isFloating,
   nextBrownout,
   retirementStatus,
 } from './labels.mjs';
+export { MS_PER_DAY, daysFromMs, isPast } from './dates.mjs';
 export { COMMAND_ALIASES, MANIFEST_CANDIDATES, canonicalTool, knownTools } from './tools.mjs';
 export { DriftError, NotFoundError } from './http.mjs';

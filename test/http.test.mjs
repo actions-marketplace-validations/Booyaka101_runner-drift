@@ -140,3 +140,26 @@ test('an unexpected status is surfaced with its code', async () => {
     restore();
   }
 });
+
+/**
+ * The user-agent carried `runner-drift/1.0.2` through the whole of 1.1.0,
+ * because nothing tied it to the package version. This is that tie.
+ */
+test('the user-agent version matches package.json', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  const src = await readFile(new URL('../src/http.mjs', import.meta.url), 'utf8');
+  const ua = src.match(/'user-agent':\s*'runner-drift\/([0-9]+\.[0-9]+\.[0-9]+)/);
+  assert.ok(ua, 'the user-agent string is still where this test looks for it');
+  assert.equal(ua[1], pkg.version, 'bump the user-agent in src/http.mjs alongside package.json');
+});
+
+/** action.yml requests a published version of this package; it has to be this one. */
+test('action.yml requests the version being released', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  const yml = await readFile(new URL('../action.yml', import.meta.url), 'utf8');
+  const dflt = yml.match(/npm version of runner-drift to run\.'\s*\n\s*required: false\s*\n\s*default: '([^']+)'/);
+  assert.ok(dflt, "action.yml's version input is still where this test looks for it");
+  assert.equal(dflt[1], pkg.version, "bump action.yml's version default alongside package.json");
+});

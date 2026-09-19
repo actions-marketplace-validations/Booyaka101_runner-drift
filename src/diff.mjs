@@ -15,6 +15,23 @@ export function parseVersion(v) {
   return [Number(m[1]), Number(m[2] ?? 0), Number(m[3] ?? 0)];
 }
 
+/**
+ * Compare two dot-separated numeric tuples: `20260720.234.2` runner-image
+ * versions and `2.335.1` runner agent versions alike. A missing field sorts
+ * low, so `2.9` comes before `2.9.1`.
+ */
+export function compareDottedNumbers(a, b) {
+  const pa = String(a).split('.').map(Number);
+  const pb = String(b).split('.').map(Number);
+  const n = Math.max(pa.length, pb.length);
+  for (let i = 0; i < n; i++) {
+    const x = Number.isFinite(pa[i]) ? pa[i] : -1;
+    const y = Number.isFinite(pb[i]) ? pb[i] : -1;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
+}
+
 export function compareVersions(a, b) {
   const pa = parseVersion(a);
   const pb = parseVersion(b);

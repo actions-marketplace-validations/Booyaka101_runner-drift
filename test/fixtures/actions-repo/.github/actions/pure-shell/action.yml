@@ -1,0 +1,7 @@
+name: pure shell
+description: Composite with nothing to resolve.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: echo nothing to see

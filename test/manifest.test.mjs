@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { performance } from 'node:perf_hooks';
 import assert from 'node:assert/strict';
 import { parseManifest, lookupTool, manifestUrl } from '../src/manifest.mjs';
 import { readFixture, loadFixtureManifest } from './helpers.mjs';
@@ -84,4 +85,39 @@ test('loadFixtureManifest reports an unknown label as skipped, not a crash', asy
   const m = await loadFixtureManifest('ubuntu-99.04');
   assert.equal(m.skipped, true);
   assert.match(m.reason, /no fixture/);
+});
+
+/**
+ * The manifest parser is linear, and this is what says so.
+ *
+ * Six `js/polynomial-redos` alerts sat open on this file from 2026-08-14. The
+ * worst were the trailing-parenthesis note stripper and the version cleaner:
+ * `\s*\(...\)\s*$` and `\s*\(default\)\s*` both re-try their leading whitespace
+ * run from every start position when the rest of the pattern cannot match, so an
+ * unclosed parenthesis after a long stretch of spaces went quadratic. 240k
+ * characters took 45 seconds; the same input now takes about a millisecond.
+ *
+ * The budget is loose enough that a slow CI box cannot fail it, and tight enough
+ * that any reintroduction blows straight through it.
+ */
+test('parseManifest stays linear on pathological input', () => {
+  const CR = String.fromCharCode(13);
+  const pad = ' '.repeat(240_000);
+  const BUDGET_MS = 2000;
+
+  const cases = [
+    ['a parenthesis that is never closed', `- Tool 1.0 (${pad}x`],
+    ['spaces then an unclosed (default', `- Tool 1.0${pad}(default`],
+    ['a bullet body with no version', `- ${'a'.repeat(240_000)}:${pad}`],
+    ['an OS Version line with a stray CR', `- OS Version:${pad}${CR}`],
+    ['an Image Version line with a stray CR', `- Image Version:${pad}${CR}`],
+    ['a table cell full of open parens', `| Name | V |\n|---|---|\n| a${'('.repeat(60_000)} | 1.0 |`],
+  ];
+
+  for (const [label, input] of cases) {
+    const started = performance.now();
+    parseManifest(input, 'ubuntu-22.04');
+    const elapsed = performance.now() - started;
+    assert.ok(elapsed < BUDGET_MS, `${label} took ${elapsed.toFixed(0)}ms, budget ${BUDGET_MS}ms`);
+  }
 });

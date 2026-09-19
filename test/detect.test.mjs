@@ -1,10 +1,12 @@
 import test from 'node:test';
+import { performance } from 'node:perf_hooks';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import {
   analyseWorkflow,
   extractLabels,
   extractLabelSites,
+  extractRunsOnTargets,
   extractRunScripts,
   commandsInScript,
   detect,
@@ -78,6 +80,17 @@ test('actions/setup-* counts as using the tool', () => {
     'jobs:\n  a:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/setup-go@v5\n',
   );
   assert.deepEqual(r.tools, ['Go']);
+});
+
+test('a flow-style step still counts as using the tool', () => {
+  const r = analyseWorkflow(
+    'jobs:\n  a:\n    runs-on: ubuntu-24.04\n    steps: [{uses: actions/setup-go@v5}, {run: go build}]\n',
+  );
+  assert.deepEqual(r.tools, ['Go']);
+  assert.deepEqual(
+    r.uses.map((s) => [s.ref, s.col]),
+    [['actions/setup-go@v5', 20]],
+  );
 });
 
 test('scans a real workflow directory', async () => {
@@ -171,4 +184,42 @@ test('detect() on the retirement fixture pins macos-14 and ubuntu-22.04 at known
     { line: 30, col: 14 },
   );
   assert.ok(!d.labelSites.some((s) => s.label === 'ubuntu-latest'), 'floating label has no site');
+});
+
+/**
+ * The line scanners are linear, and this is what says so.
+ *
+ * CodeQL raised js/polynomial-redos on three of them during the 1.2.0 review.
+ * The shape was `\s*(.*)$`: both quantifiers can match a space, and `$` can fail
+ * because `.` excludes line terminators, so one stray carriage return on a long
+ * line made the engine try every way to split the whitespace between them. The
+ * `run:` scanner had a second variant, `[ \t]*-?[ \t]*`, where nothing mandatory
+ * sat between the two runs.
+ *
+ * At this size the quadratic versions took tens of seconds; the linear ones take
+ * under a millisecond. The budget is deliberately loose so a slow CI box cannot
+ * fail it, while any reintroduction still blows straight through it.
+ */
+test('the line scanners stay linear on pathological input', () => {
+  const CR = String.fromCharCode(13);
+  const pad = ' '.repeat(200_000);
+  const BUDGET_MS = 2000;
+
+  const cases = [
+    ['indent that never reaches run:', () => extractRunScripts(`${pad}x`)],
+    ['dash then indent, no run:', () => extractRunScripts(`${pad}-${pad}x`)],
+    ['run: with a trailing CR', () => extractRunScripts(`  run:${pad}${CR}x`)],
+    ['runs-on: with a trailing CR', () => extractRunsOnTargets(`runs-on:${pad}${CR}x`)],
+    ['a block-list dash with a CR', () => extractRunsOnTargets(`runs-on:\n${pad}-${pad}${CR}`)],
+    ['extractLabels', () => extractLabels(`runs-on:${pad}${CR}x`)],
+    ['extractLabelSites', () => extractLabelSites(`runs-on:${pad}${CR}x`)],
+    ['commandsInScript after sudo', () => commandsInScript(`sudo${pad}x`)],
+  ];
+
+  for (const [label, fn] of cases) {
+    const started = performance.now();
+    fn();
+    const elapsed = performance.now() - started;
+    assert.ok(elapsed < BUDGET_MS, `${label} took ${elapsed.toFixed(0)}ms, budget ${BUDGET_MS}ms`);
+  }
 });

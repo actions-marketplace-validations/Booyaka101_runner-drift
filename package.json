@@ -1,6 +1,6 @@
 {
   "name": "runner-drift",
-  "version": "1.1.0",
+  "version": "1.3.0",
   "description": "Detect and attribute GitHub Actions runner-image tool drift: lock the tool versions your CI actually uses, diff them on every image bump, and plan a runner label migration before the deprecation deadline.",
   "type": "module",
   "bin": {

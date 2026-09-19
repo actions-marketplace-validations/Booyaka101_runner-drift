@@ -1,0 +1,267 @@
+{
+  "_endpoint": "GET /orgs/{org}/actions/runners  and  GET /repos/{owner}/{repo}/actions/runners",
+  "_note": "Runner objects built to the documented schema (id, runner_group_id, name, os, status, busy, labels, ephemeral, version) because this account has no self-hosted runners to record. The version strings and every date they resolve to are real: see deprecations-recorded.json, recorded live from the API. The empty fleet in that file IS a recorded response.",
+  "_schema": "https://docs.github.com/en/rest/actions/self-hosted-runners?apiVersion=2022-11-28",
+  "arc": {
+    "total_count": 3,
+    "runners": [
+      {
+        "id": 11,
+        "runner_group_id": 1,
+        "name": "arc-linux-1",
+        "os": "linux",
+        "status": "online",
+        "busy": false,
+        "labels": [
+          {
+            "id": 1,
+            "name": "self-hosted",
+            "type": "read-only"
+          },
+          {
+            "id": 2,
+            "name": "Linux",
+            "type": "read-only"
+          },
+          {
+            "id": 3,
+            "name": "X64",
+            "type": "read-only"
+          },
+          {
+            "id": 6,
+            "name": "gpu",
+            "type": "custom"
+          }
+        ],
+        "ephemeral": true,
+        "version": "2.335.1"
+      },
+      {
+        "id": 12,
+        "runner_group_id": 1,
+        "name": "arc-linux-2",
+        "os": "linux",
+        "status": "online",
+        "busy": true,
+        "labels": [
+          {
+            "id": 1,
+            "name": "self-hosted",
+            "type": "read-only"
+          },
+          {
+            "id": 2,
+            "name": "Linux",
+            "type": "read-only"
+          },
+          {
+            "id": 3,
+            "name": "X64",
+            "type": "read-only"
+          },
+          {
+            "id": 6,
+            "name": "gpu",
+            "type": "custom"
+          }
+        ],
+        "ephemeral": true,
+        "version": "2.335.1"
+      },
+      {
+        "id": 13,
+        "runner_group_id": 2,
+        "name": "build-mac-1",
+        "os": "macos",
+        "status": "online",
+        "busy": false,
+        "labels": [
+          {
+            "id": 1,
+            "name": "self-hosted",
+            "type": "read-only"
+          },
+          {
+            "id": 4,
+            "name": "macOS",
+            "type": "read-only"
+          },
+          {
+            "id": 5,
+            "name": "ARM64",
+            "type": "read-only"
+          }
+        ],
+        "ephemeral": false,
+        "version": "2.337.0"
+      }
+    ]
+  },
+  "current": {
+    "total_count": 2,
+    "runners": [
+      {
+        "id": 21,
+        "runner_group_id": 1,
+        "name": "auto-1",
+        "os": "linux",
+        "status": "online",
+        "busy": false,
+        "labels": [
+          {
+            "id": 1,
+            "name": "self-hosted",
+            "type": "read-only"
+          }
+        ],
+        "ephemeral": false,
+        "version": "2.337.0"
+      },
+      {
+        "id": 22,
+        "runner_group_id": 1,
+        "name": "auto-2",
+        "os": "linux",
+        "status": "offline",
+        "busy": false,
+        "labels": [
+          {
+            "id": 1,
+            "name": "self-hosted",
+            "type": "read-only"
+          }
+        ],
+        "ephemeral": false,
+        "version": "2.337.0"
+      }
+    ]
+  },
+  "vmimage": {
+    "total_count": 2,
+    "runners": [
+      {
+        "id": 51,
+        "runner_group_id": 1,
+        "name": "build-vm-a",
+        "os": "linux",
+        "status": "online",
+        "busy": false,
+        "labels": [
+          {
+            "id": 1,
+            "name": "self-hosted",
+            "type": "read-only"
+          }
+        ],
+        "ephemeral": false,
+        "version": "2.335.1"
+      },
+      {
+        "id": 52,
+        "runner_group_id": 1,
+        "name": "build-vm-b",
+        "os": "linux",
+        "status": "online",
+        "busy": false,
+        "labels": [
+          {
+            "id": 1,
+            "name": "self-hosted",
+            "type": "read-only"
+          }
+        ],
+        "ephemeral": false,
+        "version": "2.335.1"
+      }
+    ]
+  },
+  "expired": {
+    "total_count": 2,
+    "runners": [
+      {
+        "id": 31,
+        "runner_group_id": 1,
+        "name": "vm-template-1",
+        "os": "linux",
+        "status": "online",
+        "busy": false,
+        "labels": [
+          {
+            "id": 1,
+            "name": "self-hosted",
+            "type": "read-only"
+          }
+        ],
+        "ephemeral": false,
+        "version": "2.325.0"
+      },
+      {
+        "id": 32,
+        "runner_group_id": 1,
+        "name": "build-win-1",
+        "os": "windows",
+        "status": "online",
+        "busy": false,
+        "labels": [
+          {
+            "id": 1,
+            "name": "self-hosted",
+            "type": "read-only"
+          }
+        ],
+        "ephemeral": false,
+        "version": "2.336.0"
+      }
+    ]
+  },
+  "unknown": {
+    "total_count": 2,
+    "runners": [
+      {
+        "id": 41,
+        "runner_group_id": 1,
+        "name": "never-connected",
+        "os": "unknown",
+        "status": "offline",
+        "busy": false,
+        "labels": [
+          {
+            "id": 1,
+            "name": "self-hosted",
+            "type": "read-only"
+          }
+        ],
+        "ephemeral": false,
+        "version": null
+      },
+      {
+        "id": 42,
+        "runner_group_id": 1,
+        "name": "from-the-future",
+        "os": "linux",
+        "status": "online",
+        "busy": false,
+        "labels": [
+          {
+            "id": 1,
+            "name": "self-hosted",
+            "type": "read-only"
+          }
+        ],
+        "ephemeral": false,
+        "version": "9.9.9"
+      }
+    ]
+  },
+  "forbidden": {
+    "message": "Resource not accessible by integration",
+    "documentation_url": "https://docs.github.com/rest/actions/self-hosted-runners#list-self-hosted-runners-for-an-organization",
+    "status": "403"
+  },
+  "missing": {
+    "message": "Not Found",
+    "documentation_url": "https://docs.github.com/rest/actions/self-hosted-runners#list-self-hosted-runners-for-an-organization",
+    "status": "404"
+  }
+}

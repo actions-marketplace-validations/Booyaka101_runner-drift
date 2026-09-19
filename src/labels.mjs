@@ -6,8 +6,11 @@
  * Paths that 404 at runtime are reported as a clear skip, never a crash.
  */
 
+import { daysUntil as daysUntilDate } from './dates.mjs';
+
 export const RUNNER_IMAGES_REPO = 'actions/runner-images';
-export const RAW_BASE = 'https://raw.githubusercontent.com/actions/runner-images';
+export const RAW_HOST = 'https://raw.githubusercontent.com';
+export const RAW_BASE = `${RAW_HOST}/${RUNNER_IMAGES_REPO}`;
 export const API_BASE = 'https://api.github.com';
 
 /** label -> manifest path under the runner-images repo */
@@ -142,15 +145,6 @@ export function normaliseLabel(raw) {
   if (typeof raw !== 'string') return null;
   const s = raw.trim().replace(/^['"]|['"]$/g, '').trim();
   return s ? s.toLowerCase() : null;
-}
-
-const MS_PER_DAY = 86_400_000;
-
-// Duplicated from report.mjs, which imports this module: UTC midnight, rounded.
-function daysUntilDate(dateStr, now) {
-  const target = Date.parse(`${dateStr}T00:00:00Z`);
-  if (!Number.isFinite(target)) return null;
-  return Math.round((target - now.getTime()) / MS_PER_DAY);
 }
 
 /** First brownout date on or after `now`, else null. */

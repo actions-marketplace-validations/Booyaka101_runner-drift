@@ -27,10 +27,88 @@ jobs:
       - run: node --test
       - run: node src/cli.mjs --help
 
-      # The published action, run inside its own repo — the case that used to
-      # fail with exit 127. Keeping it here is what proves 1.0.2 fixed it.
-      - name: Runner image drift (published action, self-hosted case)
+      # Two different things, both worth proving.
+      #
+      # First: the composite action against the tarball this job just built. The
+      # step body is the surface most users touch and the one `node --test`
+      # cannot reach, and this way it is exercised on a real runner before the
+      # version it requests exists on npm.
+      - name: Pack
+        id: pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Into the workspace, and passed on as a RELATIVE path: $RUNNER_TEMP is
+          # D:\a\_temp on the windows leg, and a Windows-absolute path through
+          # bash string handling is more trouble than it is worth.
+          npm pack >/dev/null
+          v="$(node -p "require('./package.json').version")"
+          printf 'tarball=runner-drift-%s.tgz\n' "$v" >> "$GITHUB_OUTPUT"
+      - name: Runner image drift (composite action, local tarball)
         uses: ./
+        with:
+          package: ${{ steps.pack.outputs.tarball }}
+
+      - name: 'Action runtimes (composite action, mode: actions)'
+        uses: ./
+        with:
+          mode: actions
+          warn-only: true
+          package: ${{ steps.pack.outputs.tarball }}
+
+      # Second: the same action resolving from npm inside its own repo — the case
+      # that used to fail with exit 127 because npx resolves a bin against the
+      # CWD's package.json first. Only a registry spec reproduces that (it needs
+      # the name AND the version to match the local package.json), so it cannot
+      # be folded into the step above.
+      #
+      # It is skipped until the version is on npm. Otherwise every release
+      # candidate carries one permanently-red step, which trains you to ignore a
+      # red X on the run you are about to tag.
+      - name: Is this version on npm yet?
+        id: onnpm
+        shell: bash
+        run: |
+          set -uo pipefail
+          v="$(node -p "require('./package.json').version")"
+          if npm view "runner-drift@$v" version >/dev/null 2>&1; then
+            printf 'published=true\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'published=false\n' >> "$GITHUB_OUTPUT"
+            echo "::notice::runner-drift@$v is not on npm yet, so the registry-spec action check is skipped. It runs on the first CI run after publish."
+          fi
+      - name: Runner image drift (published action, self-hosted case)
+        if: steps.onnpm.outputs.published == 'true'
+        uses: ./
+
+  actions:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      # Dogfood, and a real gate: if one of this repo's own `uses:` is on a
+      # runtime that 2026-09-23 takes, this job goes red before the runners do.
+      # `--fail-on-unknown` is the acceptance criterion from the 1.3.0 brief,
+      # enforced by the tool itself: every reference here resolves, so `unknown`
+      # means something changed upstream rather than "this never worked".
+      - name: actions (dogfood, fails the build on a dead or unresolved runtime)
+        run: node src/cli.mjs actions --fail-on-unknown
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: the --json survey parses and agrees
+        run: |
+          set -uo pipefail
+          node src/cli.mjs actions --json > survey.json
+          node -e '
+            const s = require("./survey.json");
+            console.log(`${s.uniqueReferences} unique reference(s)`, JSON.stringify(s.counts));
+          '
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
   live:
     runs-on: ubuntu-24.04
@@ -55,3 +133,40 @@ jobs:
         run: node src/cli.mjs guard --tools node,git,docker,cmake
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+  runners:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      # `permissions:` has no `administration` scope, so github.token is expected
+      # to be refused here — the experience almost every user gets first. This
+      # repo also has no self-hosted runners, so an empty fleet is the other
+      # correct answer. Both must exit 0 and neither may crash.
+      - name: runners with the default token degrades as documented, exit 0
+        run: |
+          set -uo pipefail
+          out="$(node src/cli.mjs runners --repo "$GITHUB_REPOSITORY" --fail-on-deprecation 30 2>&1)"
+          code=$?
+          printf '%s\n' "$out"
+          [ "$code" -eq 0 ] || { echo "expected exit 0, got $code"; exit 1; }
+          if grep -q 'title=runner-drift: PERMISSION::' <<<"$out"; then
+            grep -q 'repository permission (read)' <<<"$out" \
+              || { echo 'PERMISSION did not name the permission'; exit 1; }
+            echo 'ok: refused, and it named the permission and the endpoint'
+          elif grep -q 'no self-hosted runners registered' <<<"$out"; then
+            echo 'ok: readable, and the fleet is empty'
+          else
+            echo 'neither documented outcome was printed'; exit 1
+          fi
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: --repo and --org together is a usage error (exit 2)
+        run: |
+          set +e
+          node src/cli.mjs runners --repo a/b --org acme
+          [ "$?" -eq 2 ] || { echo 'expected exit 2'; exit 1; }

@@ -8,6 +8,7 @@
  */
 
 import { fetchJson, fetchText, DriftError } from './http.mjs';
+import { compareDottedNumbers as compareImageVersions } from './diff.mjs';
 import { API_BASE, RAW_BASE, RUNNER_IMAGES_REPO, pathForLabel } from './labels.mjs';
 import { parseManifest } from './manifest.mjs';
 
@@ -19,17 +20,7 @@ export function imageVersionFromMessage(message) {
 }
 
 /** Numeric tuple compare for `20260720.234.2` style image versions. */
-export function compareImageVersions(a, b) {
-  const pa = String(a).split('.').map(Number);
-  const pb = String(b).split('.').map(Number);
-  const n = Math.max(pa.length, pb.length);
-  for (let i = 0; i < n; i++) {
-    const x = Number.isFinite(pa[i]) ? pa[i] : -1;
-    const y = Number.isFinite(pb[i]) ? pb[i] : -1;
-    if (x !== y) return x < y ? -1 : 1;
-  }
-  return 0;
-}
+export { compareImageVersions };
 
 /**
  * @returns {Promise<Array<{sha,date,message,url,imageVersion}>>} newest first

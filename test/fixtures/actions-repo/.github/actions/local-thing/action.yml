@@ -1,0 +1,8 @@
+name: local thing
+description: A composite of our own, whose steps are ours to fix.
+runs:
+  using: composite
+  steps:
+    - uses: actions/upload-artifact@v4
+    - shell: bash
+      run: echo done

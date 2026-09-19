@@ -38,12 +38,18 @@ function stripTrailingNote(s) {
   return (i === -1 ? s : s.slice(0, i)).trim();
 }
 
+/**
+ * The notes are stripped first and the gap they leave collapsed after, rather
+ * than matching `\s*\(default\)\s*`. With a global replace that leading run is
+ * ambiguous at every start position, so a long stretch of spaces is quadratic.
+ */
 function cleanVersion(v) {
   return v
-    .replace(/\s*\(default\)\s*/gi, '')
-    .replace(/\s*\(rev\s+\d+\)\s*/gi, '')
-    .replace(/\s*\[[^\]]*\]\s*/g, '')
+    .replace(/\(default\)/gi, '')
+    .replace(/\(rev\s+\d+\)/gi, '')
+    .replace(/\[[^\]]*\]/g, '')
     .replace(/[`*]/g, '')
+    .replace(/\s{2,}/g, ' ')
     .trim();
 }
 
@@ -60,14 +66,33 @@ function splitVersionList(s) {
     .map((x) => x.replace(/^v/, ''));
 }
 
+/**
+ * Drop a trailing `(...)` note whose contents contain whitespace, which is what
+ * separates "GCC 13 (Homebrew GCC 13.4.0)" from "5.1.16(1)-release".
+ */
+function stripTrailingParenNote(s) {
+  const body = s.trimEnd();
+  if (!body.endsWith(')')) return body;
+  const open = body.lastIndexOf('(');
+  if (open === -1) return body;
+  const inner = body.slice(open + 1, -1);
+  if (inner.includes('(') || inner.includes(')') || !/\s/.test(inner)) return body;
+  return body.slice(0, open).trim();
+}
+
 function parseBullet(rawLine) {
   let body = stripTrailingNote(rawLine.replace(/^\s*-\s+/, '').trim()).replace(/[`]/g, '');
   if (!body) return null;
 
   // "GCC 13 (Homebrew GCC 13.4.0)" -> "GCC 13"; leaves "5.1.16(1)-release" alone.
-  body = body.replace(/\s*\([^()]*\s[^()]*\)\s*$/, '').trim();
+  //
+  // Deliberately not a regex. Every regex spelling of "optional whitespace, then
+  // a parenthesised group, at the end" re-tries that leading run from every
+  // position when the parenthesis is never closed, which is quadratic. Indexing
+  // from the last `(` is the same rule in linear time.
+  body = stripTrailingParenNote(body);
 
-  const colon = body.match(/^([^:]+):\s*(.+)$/);
+  const colon = body.match(/^([^:]+):[ \t]*([^\r\n]+)/);
   if (colon) {
     const name = colon[1].trim();
     if (HEADER_KEYS.has(name.toLowerCase())) return null;
@@ -174,12 +199,12 @@ export function parseManifest(markdown, label = null) {
       continue;
     }
 
-    const osM = line.match(/^\s*-\s+OS Version:\s*(.+)$/i);
+    const osM = line.match(/^[ \t]*-[ \t]+OS Version:[ \t]*([^\r\n]+)/i);
     if (osM) {
       osVersion ??= osM[1].trim();
       continue;
     }
-    const ivM = line.match(/^\s*-\s+Image Version:\s*(.+)$/i);
+    const ivM = line.match(/^[ \t]*-[ \t]+Image Version:[ \t]*([^\r\n]+)/i);
     if (ivM) {
       imageVersion ??= ivM[1].trim();
       continue;
@@ -242,7 +267,9 @@ export function parseManifest(markdown, label = null) {
       continue;
     }
 
-    const name = cells[nameCol]?.replace(/[`*[\]]/g, '').replace(/\(.*?\)/g, '').trim();
+    // `[^()]*` rather than a lazy `.*?`, which re-expands to the end of the
+    // string from every `(` when one is unclosed. Same match on real cells.
+    const name = cells[nameCol]?.replace(/[`*[\]]/g, '').replace(/\([^()]*\)/g, '').trim();
     const versions = splitVersionList(cells[versionCol] ?? '');
     if (name && versions.length) add(name, versions, section);
   }
