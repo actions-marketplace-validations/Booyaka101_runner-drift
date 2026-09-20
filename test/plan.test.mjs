@@ -32,7 +32,7 @@ test('golden: ubuntu-22.04 -> ubuntu-24.04 for a python/cmake/clang workflow', a
   );
   assert.equal(
     lines[2],
-    '255 days left (230 until the first brownout) — deprecation began 2026-09-17; see https://github.com/actions/runner-images/issues/14254',
+    '255 days left (230 days until the first brownout) — deprecation began 2026-09-17; see https://github.com/actions/runner-images/issues/14254',
   );
 
   const rows = lines.filter((l) => /^(Python|Clang|CMake|Node\.js|Git|Go) /.test(l));

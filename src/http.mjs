@@ -16,6 +16,12 @@ export class DriftError extends Error {
   }
 }
 
+/** One line for a caught failure: a DriftError's hint belongs with its message. */
+export function errorText(err) {
+  if (!(err instanceof DriftError)) return String(err);
+  return err.hint ? `${err.message} ${err.hint}` : err.message;
+}
+
 export class NotFoundError extends DriftError {
   constructor(message) {
     super(message, { code: 'NOT_FOUND' });
@@ -43,7 +49,7 @@ function authHeaders() {
   const token =
     process.env.GITHUB_TOKEN || process.env.GH_TOKEN || process.env.INPUT_GITHUB_TOKEN || '';
   const headers = {
-    'user-agent': 'runner-drift/1.3.0 (+https://github.com/Booyaka101/runner-drift)',
+    'user-agent': 'runner-drift/1.4.1 (+https://github.com/Booyaka101/runner-drift)',
     accept: 'application/vnd.github+json',
   };
   if (token) headers.authorization = `Bearer ${token}`;

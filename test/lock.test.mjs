@@ -84,10 +84,10 @@ test('writing to an unwritable path gives an actionable message', async () => {
   );
 });
 
-test('toVersionMap accepts both entry shapes', () => {
-  assert.deepEqual(
-    toVersionMap({ A: { versions: ['1.0.0'], source: 'probe' }, B: ['2.0.0'] }),
-    { A: ['1.0.0'], B: ['2.0.0'] },
-  );
-  assert.deepEqual(toVersionMap(undefined), {});
+test('toVersionMap accepts both entry shapes, and answers only for its own keys', () => {
+  const map = toVersionMap({ A: { versions: ['1.0.0'], source: 'probe' }, B: ['2.0.0'] });
+  assert.deepEqual({ ...map }, { A: ['1.0.0'], B: ['2.0.0'] });
+  assert.equal(Object.getPrototypeOf(map), null, 'a tool named `constructor` is data, not a function');
+  assert.equal('constructor' in map, false);
+  assert.deepEqual({ ...toVersionMap(undefined) }, {});
 });

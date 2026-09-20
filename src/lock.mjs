@@ -60,8 +60,9 @@ export async function readLock(file = DEFAULT_LOCK_FILE) {
   return json;
 }
 
-export async function writeLock(lock, file = DEFAULT_LOCK_FILE) {
-  const out = {
+/** The lock file's on-disk shape, built without writing it. */
+export function lockPayload(lock) {
+  return {
     schemaVersion: SCHEMA_VERSION,
     label: lock.label ?? null,
     imageOS: lock.imageOS ?? null,
@@ -69,6 +70,10 @@ export async function writeLock(lock, file = DEFAULT_LOCK_FILE) {
     tools: lock.tools ?? {},
     updatedAt: lock.updatedAt ?? new Date().toISOString(),
   };
+}
+
+export async function writeLock(lock, file = DEFAULT_LOCK_FILE) {
+  const out = lockPayload(lock);
   try {
     await writeFile(file, `${JSON.stringify(out, null, 2)}\n`, 'utf8');
   } catch (err) {
@@ -85,9 +90,9 @@ export function toolsEntry(versions, source, extra = {}) {
   return { versions: [...versions], source, ...extra };
 }
 
-/** `{Tool: {versions, source}}` -> `{Tool: versions[]}` */
+/** `{Tool: {versions, source}}` -> `{Tool: versions[]}`, keyed without a prototype. */
 export function toVersionMap(tools) {
-  const out = {};
+  const out = Object.create(null);
   for (const [k, v] of Object.entries(tools ?? {})) {
     out[k] = Array.isArray(v) ? v : (v?.versions ?? []);
   }

@@ -7,6 +7,8 @@
  * to see — a naive first-element compare hides two thirds of it.
  */
 
+import { lookup } from './tables.mjs';
+
 export const SEVERITY_ORDER = ['none', 'patch', 'minor', 'major'];
 
 export function parseVersion(v) {
@@ -120,7 +122,7 @@ function mk(tool, from, to, kind, severity, added, removed, detail, changed) {
  * canonical name to the manifest's own key is done by the caller.
  */
 export function diffToolMaps(tools, fromMap, toMap) {
-  return tools.map((t) => diffTool(t, fromMap[t] ?? null, toMap[t] ?? null));
+  return tools.map((t) => diffTool(t, lookup(fromMap, t), lookup(toMap, t)));
 }
 
 /** Highest severity across a list of diffs. */

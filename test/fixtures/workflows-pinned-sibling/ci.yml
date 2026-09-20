@@ -1,0 +1,13 @@
+name: ci
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: node --version
+
+  compat:
+    runs-on: ubuntu-26.04
+    steps:
+      - run: node --version

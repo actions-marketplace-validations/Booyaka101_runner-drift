@@ -1,7 +1,8 @@
 /** Programmatic entry point. The CLI is `src/cli.mjs`. */
 
 export { main, runInit, runGuard, runPlan, runRunners, runActions, resolveManifestVersions, EXIT_OK, EXIT_DRIFT, EXIT_USAGE } from './cli.mjs';
-export { parseManifest, loadManifest, manifestUrl, lookupTool } from './manifest.mjs';
+export { parseManifest, loadManifest, manifestUrl, lookupTool, diffManifestTools } from './manifest.mjs';
+export { IMAGE_FIELDS, attributeImageOS, imageDiffs, surveyMigration } from './migration.mjs';
 export {
   listManifestCommits,
   findCommitForImageVersion,
@@ -17,7 +18,12 @@ export {
   analyseWorkflow,
   extractLabels,
   extractLabelSites,
+  extractFloatingSites,
   extractRunsOnTargets,
+  jobMatcher,
+  labelOwnership,
+  runningJob,
+  siteInJob,
   extractRunScripts,
   extractUses,
   setupTools,
@@ -27,7 +33,7 @@ export {
 } from './detect.mjs';
 export { probeTool, probeTools, isProbeable, PROBES } from './probe.mjs';
 export { diffTool, diffToolMaps, shouldFail, maxSeverity, severityBetween, compareVersions, compareDottedNumbers } from './diff.mjs';
-export { readLock, writeLock, emptyLock, toVersionMap, SCHEMA_VERSION, DEFAULT_LOCK_FILE } from './lock.mjs';
+export { readLock, writeLock, lockPayload, emptyLock, toVersionMap, SCHEMA_VERSION, DEFAULT_LOCK_FILE } from './lock.mjs';
 export {
   planReport,
   stepSummaryMarkdown,
@@ -43,6 +49,12 @@ export {
   retirementFindings,
   retirementAnnotations,
   retirementSummaryMarkdown,
+  migrationMessage,
+  migrationHeader,
+  migrationLines,
+  migrationReport,
+  migrationAnnotations,
+  migrationSummaryMarkdown,
   runnerGroupDetail,
   runnersReport,
   runnersAnnotations,
@@ -98,15 +110,24 @@ export {
 export {
   LABEL_PATHS,
   DEADLINES,
+  MIGRATIONS,
+  MIGRATION_PHASE,
+  MIGRATION_STATE,
   IMAGE_OS_TO_LABEL,
   API_BASE,
   RAW_HOST,
   knownLabels,
   deadlineFor,
   isFloating,
+  labelForImageOS,
+  migratingLabels,
+  migrationBetween,
+  migrationFails,
+  migrationFor,
+  migrationStatus,
   nextBrownout,
   retirementStatus,
 } from './labels.mjs';
 export { MS_PER_DAY, daysFromMs, isPast } from './dates.mjs';
 export { COMMAND_ALIASES, MANIFEST_CANDIDATES, canonicalTool, knownTools } from './tools.mjs';
-export { DriftError, NotFoundError } from './http.mjs';
+export { DriftError, NotFoundError, errorText } from './http.mjs';

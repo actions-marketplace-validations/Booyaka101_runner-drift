@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "label": "ubuntu-24.04",
   "imageOS": "ubuntu24",
-  "imageVersion": "20260720.247.2",
+  "imageVersion": "20260907.300.1",
   "tools": {
     "Node.js": {
       "versions": [
@@ -12,5 +12,5 @@
       "command": "node --version"
     }
   },
-  "updatedAt": "2026-08-05T05:13:56.107Z"
+  "updatedAt": "2026-09-20T11:17:35.354Z"
 }

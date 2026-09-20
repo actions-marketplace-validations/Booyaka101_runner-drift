@@ -11,6 +11,15 @@ test('parses the header of a real Ubuntu 22.04 manifest', async () => {
   assert.equal(m.title, 'Ubuntu 22.04');
 });
 
+test('a bullet named after an Object member is a tool, not a prototype lookup', () => {
+  const m = parseManifest(
+    ['# Ubuntu', '', '## Installed Software', '', '- constructor: 1.2.3', ''].join('\n'),
+  );
+  assert.deepEqual(m.tools.constructor, ['1.2.3']);
+  assert.equal(m.osVersion, null);
+  assert.equal(m.kernelVersion, null);
+});
+
 test('parses both installed-software line styles', async () => {
   const m = parseManifest(await readFixture('ubuntu-22.04'));
   // "- CMake 3.31.6"  (name + single version)
@@ -109,6 +118,7 @@ test('parseManifest stays linear on pathological input', () => {
     ['a parenthesis that is never closed', `- Tool 1.0 (${pad}x`],
     ['spaces then an unclosed (default', `- Tool 1.0${pad}(default`],
     ['a bullet body with no version', `- ${'a'.repeat(240_000)}:${pad}`],
+    ['a dashed bullet whose colon never arrives', `- ${pad}x`],
     ['an OS Version line with a stray CR', `- OS Version:${pad}${CR}`],
     ['an Image Version line with a stray CR', `- Image Version:${pad}${CR}`],
     ['a table cell full of open parens', `| Name | V |\n|---|---|\n| a${'('.repeat(60_000)} | 1.0 |`],

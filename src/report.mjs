@@ -12,8 +12,13 @@ import { appendFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { daysUntil } from './dates.mjs';
-import { deadlineFor, retirementStatus } from './labels.mjs';
+import {
+  MIGRATION_STATE,
+  deadlineFor,
+  retirementStatus,
+} from './labels.mjs';
 import { REF_STATUS } from './runtimes.mjs';
+import { lookup } from './tables.mjs';
 import {
   MINIMUM_REGISTRATION_VERSION,
   RUNNER_STATUS,
@@ -25,10 +30,12 @@ import {
 
 export { daysUntil };
 
+export const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
 /** `(82 days)` / `(60 days ago)` — the countdown suffix both lanes print. */
 export function countdown(days) {
   if (days === null || days === undefined) return '';
-  return days < 0 ? `(${Math.abs(days)} days ago)` : `(${days} days)`;
+  return days < 0 ? `(${plural(Math.abs(days), 'day')} ago)` : `(${plural(days, 'day')})`;
 }
 
 /** `2026-11-02 (82 days)`. A full ISO date-time is trimmed to its date. */
@@ -67,8 +74,8 @@ export function deadlineLines(label, now = new Date()) {
     left === null
       ? null
       : left > 0
-        ? `${left} days left${untilBrownout !== null && untilBrownout > 0 ? ` (${untilBrownout} until the first brownout)` : ''}`
-        : `retired ${Math.abs(left)} days ago`;
+        ? `${plural(left, 'day')} left${untilBrownout !== null && untilBrownout > 0 ? ` (${plural(untilBrownout, 'day')} until the first brownout)` : ''}`
+        : `retired ${plural(Math.abs(left), 'day')} ago`;
   if (countdownLine) {
     lines.push(`${countdownLine} — deprecation began ${dl.deprecationStart}; see ${dl.source}`);
   }
@@ -82,16 +89,36 @@ export function deadlineLines(label, now = new Date()) {
 }
 
 /**
- * Full `plan` report.
+ * Full `plan` report. `image` is the manifest-header diff (OS, kernel, systemd)
+ * and `migration` the survey that resolved a floating label, both optional.
  * @returns {string}
  */
-export function planReport({ from, to, fromImage, toImage, diffs, detected, now = new Date() }) {
+export function planReport({
+  from,
+  to,
+  fromImage,
+  toImage,
+  diffs,
+  image = [],
+  migration = null,
+  detected,
+  now = new Date(),
+}) {
   const out = [];
+  // The migration headline first: when `plan` resolved a floating label, it is
+  // the reason these two concrete labels are being compared at all.
+  if (migration) out.push(...migrationHeader(migration));
   out.push(`${from} -> ${to} (images ${fromImage} -> ${toImage})`);
   const dl = deadlineLines(from, now);
   if (dl) out.push(...dl);
   else out.push(`${from} has no announced deprecation deadline in runner-drift's table.`);
   out.push('');
+
+  const imageChanged = image.filter((d) => d.changed);
+  if (imageChanged.length) {
+    for (const d of imageChanged) out.push(planRow(d));
+    out.push('');
+  }
 
   const changed = diffs.filter((d) => d.changed);
   if (!changed.length) {
@@ -123,28 +150,42 @@ const SEVERITY_BADGE = {
 /** GitHub step-summary markdown for a `guard` run. */
 export function stepSummaryMarkdown({
   label,
+  fromLabel = null,
   fromImage,
   toImage,
   diffs,
   attribution = {},
   approximate = false,
   baseline = false,
+  written = true,
+  explains = null,
   lockFile,
 }) {
   const lines = [];
   lines.push('## runner-drift');
   lines.push('');
   if (baseline) {
+    const count = Object.keys(diffs).length || diffs.length;
     lines.push(
-      `Baseline recorded for \`${label}\` at image \`${toImage}\` — ${Object.keys(diffs).length || diffs.length} tool(s) locked in \`${lockFile}\`.`,
+      written
+        ? `Baseline recorded for \`${label}\` at image \`${toImage}\` — ${count} tool(s) locked in \`${lockFile}\`.`
+        : `Baseline observed for \`${label}\` at image \`${toImage}\` — ${count} tool(s). Nothing written: \`--no-update-lock\` is set.`,
     );
     lines.push('');
-    lines.push('The next run on a bumped image will diff against this baseline.');
+    lines.push(
+      written
+        ? 'The next run on a bumped image will diff against this baseline.'
+        : `Drop the flag to record \`${lockFile}\`, and the next run on a bumped image has something to diff against.`,
+    );
     return `${lines.join('\n')}\n`;
   }
 
   const changed = diffs.filter((d) => d.changed);
-  lines.push(`\`${label}\` image \`${fromImage}\` → \`${toImage}\``);
+  lines.push(
+    fromLabel && fromLabel !== label
+      ? `\`${fromLabel}\` image \`${fromImage}\` → \`${label}\` image \`${toImage}\``
+      : `\`${label}\` image \`${fromImage}\` → \`${toImage}\``,
+  );
   if (approximate) {
     lines.push('');
     lines.push(
@@ -157,8 +198,16 @@ export function stepSummaryMarkdown({
     return `${lines.join('\n')}\n`;
   }
 
+  if (explains) {
+    lines.push(
+      `> 📅 Explained by the scheduled \`${explains.label}\` migration \`${explains.from}\` → ` +
+        `\`${explains.to}\` (${explains.starts} to ${explains.ends}). The tools below moved with the image.`,
+    );
+    lines.push('');
+  }
+
   const rows = changed.map((d) => {
-    const a = attribution[d.tool];
+    const a = lookup(attribution, d.tool);
     const shipped = a
       ? `[${a.imageVersion ?? a.sha.slice(0, 7)}](${a.url})${a.exact ? '' : ' _(approx)_'}`
       : '—';
@@ -168,7 +217,11 @@ export function stepSummaryMarkdown({
   });
   lines.push(...markdownTable(['Tool', 'Locked', 'Now', 'Change', 'Shipped by'], rows));
   lines.push('');
-  lines.push(`Lock file \`${lockFile}\` updated to image \`${toImage}\`.`);
+  lines.push(
+    written
+      ? `Lock file \`${lockFile}\` updated to image \`${toImage}\`.`
+      : `Lock file \`${lockFile}\` left at image \`${fromImage}\`: \`--no-update-lock\` is set.`,
+  );
   return `${lines.join('\n')}\n`;
 }
 
@@ -216,7 +269,7 @@ export function annotations(diffs, attribution = {}, label = '') {
   return diffs
     .filter((d) => d.changed)
     .map((d) => {
-      const a = attribution[d.tool];
+      const a = lookup(attribution, d.tool);
       const where = a ? ` — shipped by ${a.imageVersion ?? a.sha.slice(0, 7)} ${a.url}` : '';
       const sev = d.severity.toUpperCase();
       const detail = d.detail === sev ? sev : `${sev}: ${d.detail}`;
@@ -263,7 +316,7 @@ export function retirementFindings(labelSites, { now = new Date(), days } = {}) 
 function retirementMessage(s) {
   const migrate = `Migrate to ${s.migrateTo.join(', ')}.`;
   if (s.retired) {
-    return `${s.label} retired ${Math.abs(s.daysToUnsupported)} days ago — fully unsupported since ${s.fullyUnsupported}. ${migrate} See ${s.source}`;
+    return `${s.label} retired ${plural(Math.abs(s.daysToUnsupported), 'day')} ago — fully unsupported since ${s.fullyUnsupported}. ${migrate} See ${s.source}`;
   }
   const brownout = s.nextBrownout
     ? `; next brownout ${dateWithCountdown(s.nextBrownout, s.daysToBrownout)}`
@@ -279,9 +332,9 @@ export function retirementAnnotations(findings) {
   return findings.map((f) => {
     const s = f.status;
     let kind = 'error';
-    let title = `runner-drift: ${s.label} retires in ${s.daysToUnsupported} days`;
+    let title = `runner-drift: ${s.label} retires in ${plural(s.daysToUnsupported, 'day')}`;
     if (s.retired) {
-      title = `runner-drift: ${s.label} retired ${Math.abs(s.daysToUnsupported)} days ago`;
+      title = `runner-drift: ${s.label} retired ${plural(Math.abs(s.daysToUnsupported), 'day')} ago`;
     } else if (f.trigger === 'brownout') {
       kind = 'warning';
       title = `runner-drift: ${s.label} deprecation`;
@@ -299,7 +352,7 @@ export function retirementSummaryMarkdown(findings) {
       `\`${annotationPath(f.file)}:${f.line}\``,
       s.nextBrownout ? dateWithCountdown(s.nextBrownout, s.daysToBrownout) : '—',
       s.retired
-        ? `${s.fullyUnsupported} (retired ${Math.abs(s.daysToUnsupported)} days ago)`
+        ? `${s.fullyUnsupported} (retired ${plural(Math.abs(s.daysToUnsupported), 'day')} ago)`
         : dateWithCountdown(s.fullyUnsupported, s.daysToUnsupported),
       s.migrateTo.map((m) => `\`${m}\``).join(', '),
       `[${s.sourceRef}](${s.source})`,
@@ -313,6 +366,158 @@ export function retirementSummaryMarkdown(findings) {
       rows,
     ),
   ];
+  return `${lines.join('\n')}\n`;
+}
+
+/* ------------------------------------------------ floating-label migration */
+
+/**
+ * One sentence per state. Wording is the point of this lane: the same window
+ * means something different depending on whether the runner has moved yet, and
+ * a single generic warning would hide exactly that.
+ */
+const MIGRATION_SENTENCE = {
+  [MIGRATION_STATE.PENDING]: (s) =>
+    `${s.label} moves from ${s.from} to ${s.to}. The rollout starts ${dateWithCountdown(s.starts, s.daysToStart)} and finishes ${dateWithCountdown(s.ends, s.daysToEnd)}.`,
+  [MIGRATION_STATE.MOVED_EARLY]: (s) =>
+    `${s.label} already served ${s.to}, ahead of the announced rollout starting ${dateWithCountdown(s.starts, s.daysToStart)}.`,
+  [MIGRATION_STATE.NOT_YET_MIGRATED]: (s) =>
+    `${s.label} is migrating from ${s.from} to ${s.to} and this runner served ${s.from}. The rollout finishes ${dateWithCountdown(s.ends, s.daysToEnd)}; until then the same label is either image.`,
+  [MIGRATION_STATE.MIGRATED]: (s) =>
+    `The scheduled ${s.label} migration has reached this runner: ${s.from} -> ${s.to}, rollout ${s.starts} to ${s.ends}.`,
+  [MIGRATION_STATE.AMBIGUOUS]: (s) =>
+    `${s.label} is mid-rollout from ${s.from} to ${s.to}, finishing ${dateWithCountdown(s.ends, s.daysToEnd)}. Until then the label means either image, and which one a job gets depends on the runner it lands on.`,
+  [MIGRATION_STATE.SETTLED]: (s) =>
+    `${s.label} finished migrating from ${s.from} to ${s.to} on ${dateWithCountdown(s.ends, s.daysToEnd)}; it now means ${s.to}.`,
+  [MIGRATION_STATE.STALE]: (s) =>
+    `${s.label} served ${s.from}, but its migration to ${s.to} closed on ${dateWithCountdown(s.ends, s.daysToEnd)}. A runner still on the retired image after the window is an anomaly, not drift.`,
+  [MIGRATION_STATE.UNEXPECTED]: (s) =>
+    `${s.label} served ImageOS="${s.imageOS}", which is neither ${s.from} nor ${s.to}. runner-drift's migration window (${s.starts} to ${s.ends}) may be out of date.`,
+};
+
+const MIGRATION_KIND = {
+  [MIGRATION_STATE.PENDING]: 'notice',
+  [MIGRATION_STATE.MOVED_EARLY]: 'notice',
+  [MIGRATION_STATE.NOT_YET_MIGRATED]: 'warning',
+  [MIGRATION_STATE.MIGRATED]: 'notice',
+  [MIGRATION_STATE.AMBIGUOUS]: 'warning',
+  [MIGRATION_STATE.SETTLED]: 'notice',
+  [MIGRATION_STATE.STALE]: 'error',
+  [MIGRATION_STATE.UNEXPECTED]: 'error',
+};
+
+const MIGRATION_TITLE = {
+  [MIGRATION_STATE.PENDING]: (s) => `${s.label} becomes ${s.to} in ${plural(s.daysToStart, 'day')}`,
+  [MIGRATION_STATE.MOVED_EARLY]: (s) => `${s.label} is already ${s.to}`,
+  [MIGRATION_STATE.NOT_YET_MIGRATED]: (s) => `${s.label} migration under way`,
+  [MIGRATION_STATE.MIGRATED]: (s) => `${s.label} is now ${s.to}`,
+  [MIGRATION_STATE.AMBIGUOUS]: (s) => `${s.label} migration under way`,
+  [MIGRATION_STATE.SETTLED]: (s) => `${s.label} is now ${s.to}`,
+  [MIGRATION_STATE.STALE]: (s) => `${s.label} still serving ${s.from}`,
+  [MIGRATION_STATE.UNEXPECTED]: (s) => `unrecognised image on ${s.label}`,
+};
+
+// Keyed by state, not by phase: after the window a runner still on the old
+// image is the anomaly this lane exists to catch, and the calendar alone would
+// badge it settled next to its own ::error.
+const MIGRATION_BADGE = {
+  [MIGRATION_STATE.PENDING]: '🗓 pending',
+  [MIGRATION_STATE.MOVED_EARLY]: '🟠 moved early',
+  [MIGRATION_STATE.NOT_YET_MIGRATED]: '🟠 not yet',
+  [MIGRATION_STATE.AMBIGUOUS]: '🟠 in window',
+  [MIGRATION_STATE.MIGRATED]: '✅ migrated',
+  [MIGRATION_STATE.SETTLED]: '✅ settled',
+  [MIGRATION_STATE.STALE]: '🔴 stale',
+  [MIGRATION_STATE.UNEXPECTED]: '🔴 unexpected',
+};
+
+/** The one sentence that describes a survey. No source link; callers add it. */
+export function migrationMessage(survey) {
+  return MIGRATION_SENTENCE[survey.state](survey);
+}
+
+/** The sentence and its source: the two lines every format leads with. */
+export function migrationHeader(survey) {
+  return [
+    migrationMessage(survey),
+    `announced ${survey.announced}; source ${survey.sourceRef} ${survey.source}`,
+  ];
+}
+
+/**
+ * Plain-text block for one survey: the sentence, the source, and whatever the
+ * manifests could tell us about the difference between the two images.
+ */
+export function migrationLines(survey) {
+  const lines = migrationHeader(survey);
+  const rows = [...survey.image, ...survey.toolDiffs];
+  if (rows.length) {
+    lines.push(`${survey.from} -> ${survey.to}:`);
+    for (const d of rows) lines.push(`  ${planRow(d)}`);
+  }
+  if (survey.notOnManifest.length) {
+    lines.push(`Not listed on either image manifest (skipped): ${survey.notOnManifest.join(', ')}`);
+  }
+  for (const n of survey.notes) lines.push(n);
+  return lines;
+}
+
+/** The whole `guard` migration block, one paragraph per floating label. */
+export function migrationReport(surveys) {
+  return surveys.flatMap((s, i) => (i ? ['', ...migrationLines(s)] : migrationLines(s))).join('\n');
+}
+
+/**
+ * `::notice`/`::warning`/`::error` per `runs-on:` site, so the message lands on
+ * the line that owns the floating label. A survey built without a scan behind
+ * it has no line to point at and gets one step-level annotation instead; in
+ * `guard` that cannot happen, since the scan is what finds the label at all.
+ */
+export function migrationAnnotations(surveys) {
+  return surveys.flatMap((s) => {
+    const kind = MIGRATION_KIND[s.state];
+    const title = `runner-drift: ${MIGRATION_TITLE[s.state](s)}`;
+    const message = `${migrationMessage(s)} See ${s.source}`;
+    const sites = s.sites.length ? s.sites : [null];
+    return sites.map((site) => annotation(kind, title, message, site));
+  });
+}
+
+/** Step-summary table for migration surveys, with the image diff underneath. */
+export function migrationSummaryMarkdown(surveys) {
+  const rows = surveys.map((s) => [
+    `\`${s.label}\``,
+    MIGRATION_BADGE[s.state],
+    `\`${s.from}\` → \`${s.to}\``,
+    `${dateWithCountdown(s.starts, s.daysToStart)} → ${dateWithCountdown(s.ends, s.daysToEnd)}`,
+    s.observed ? `\`${s.observed}\`` : '—',
+    `[${s.sourceRef}](${s.source})`,
+  ]);
+  const lines = [
+    '## runner-drift — floating label migration',
+    '',
+    ...markdownTable(['Label', 'Status', 'Move', 'Window', 'This runner', 'Source'], rows),
+  ];
+  for (const s of surveys) {
+    lines.push('', migrationMessage(s));
+    // The "This runner" cell is a dash whenever the image could not be read or
+    // could not be attributed, and the note is the difference between the two.
+    for (const n of s.notes) lines.push('', n);
+    const diffRows = [...s.image, ...s.toolDiffs];
+    if (!diffRows.length) continue;
+    lines.push(
+      '',
+      ...markdownTable(
+        [`\`${s.from}\` → \`${s.to}\``, 'From', 'To', 'Change'],
+        diffRows.map((d) => [
+          d.tool,
+          d.from.join(', ') || '(absent)',
+          d.to.join(', ') || '(absent)',
+          SEVERITY_BADGE[d.severity] ?? d.severity,
+        ]),
+      ),
+    );
+  }
   return `${lines.join('\n')}\n`;
 }
 
@@ -353,8 +558,6 @@ const RUNNER_BADGE = {
   [RUNNER_STATUS.UNKNOWN_VERSION]: '❔ UNKNOWN-VERSION',
   [RUNNER_STATUS.OK]: '⚪ OK',
 };
-
-const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 /**
  * `x2` / `x2 (1 offline)`. Whether the group is in service changes how urgent it
@@ -592,7 +795,7 @@ export function runnersSummaryMarkdown(survey) {
     return `${lines.join('\n')}\n`;
   }
   lines.push(
-    `\`${survey.scope.name}\` — ${plural(survey.surveyedCount, 'runner')} on ${plural(survey.groups.length, 'version')}, window ${survey.windowDays} days.`,
+    `\`${survey.scope.name}\` — ${plural(survey.surveyedCount, 'runner')} on ${plural(survey.groups.length, 'version')}, window ${plural(survey.windowDays, 'day')}.`,
   );
   for (const c of caveats) lines.push('', c);
   lines.push('');

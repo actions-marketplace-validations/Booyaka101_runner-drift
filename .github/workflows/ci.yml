@@ -134,6 +134,38 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+  migration:
+    # Deliberately floating. Every other job here pins its image; this one is the
+    # lane's subject, and reading ImageOS off a runner that GitHub is in the
+    # middle of re-pointing is the half no test can reach.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: plan the announced ubuntu-latest move against the live manifests
+        run: node src/cli.mjs plan --from ubuntu-latest
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      # The exit code is deliberately not asserted: it is 1 while the window is
+      # ahead of this runner and 0 once the move has reached it, so pinning it
+      # would turn the rollout itself into a red build. What must hold on every
+      # run is that the lane resolved the label and named its source.
+      - name: guard --fail-on-migration on a real floating runner
+        run: |
+          set +e
+          out="$(node src/cli.mjs guard --tools node --fail-on-migration 30 --no-update-lock 2>&1)"
+          code=$?
+          printf '%s\n' "$out"
+          echo "exit $code"
+          grep -q 'ubuntu-latest' <<<"$out" || { echo 'the migration lane said nothing'; exit 1; }
+          grep -q 'actions/runner-images#14748' <<<"$out" || { echo 'no source named'; exit 1; }
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
   runners:
     runs-on: ubuntu-24.04
     steps:

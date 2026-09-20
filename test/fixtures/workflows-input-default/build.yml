@@ -1,0 +1,13 @@
+name: build
+on:
+  workflow_call:
+    inputs:
+      runner:
+        default: ubuntu-latest
+        type: string
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - run: node --version

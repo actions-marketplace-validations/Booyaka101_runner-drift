@@ -11,6 +11,7 @@ import { fetchJson, fetchText, DriftError } from './http.mjs';
 import { compareDottedNumbers as compareImageVersions } from './diff.mjs';
 import { API_BASE, RAW_BASE, RUNNER_IMAGES_REPO, pathForLabel } from './labels.mjs';
 import { parseManifest } from './manifest.mjs';
+import { lookup } from './tables.mjs';
 
 const VERSION_RE = /version\s+(\d{8}\.[\d.]+)/i;
 
@@ -116,7 +117,7 @@ export function commitWindow(commits, fromVersion, toVersion) {
  */
 export async function attributeChanges(label, diffs, window, { maxFetch = 8, candidates = null } = {}) {
   const changed = diffs.filter((d) => d.changed);
-  const out = {};
+  const out = Object.create(null);
   if (!window.length || !changed.length) return out;
 
   const newest = window.at(-1);
@@ -164,7 +165,7 @@ function sameSet(a, b) {
 }
 
 function resolveVersions(manifest, tool, candidates) {
-  const names = candidates?.[tool] ?? [tool];
+  const names = (candidates ? lookup(candidates, tool) : null) ?? [tool];
   const index = new Map(Object.keys(manifest.tools ?? {}).map((k) => [k.toLowerCase(), k]));
   for (const n of names) {
     const hit = index.get(String(n).toLowerCase());

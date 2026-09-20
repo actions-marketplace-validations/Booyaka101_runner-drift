@@ -1,0 +1,9 @@
+name: release
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-26.04
+    steps:
+      - run: node --version

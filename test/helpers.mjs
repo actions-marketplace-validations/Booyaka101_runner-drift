@@ -10,6 +10,8 @@ export const SNAPSHOTS = {
   'ubuntu-22.04': 'Ubuntu2204-Readme-20260720.234.2.md',
   'ubuntu-22.04@old': 'Ubuntu2204-Readme-20260623.199.1.md',
   'ubuntu-24.04': 'Ubuntu2404-Readme-20260720.247.2.md',
+  'ubuntu-24.04@2026-09': 'Ubuntu2404-Readme-20260907.300.1.md',
+  'ubuntu-26.04': 'Ubuntu2604-Readme-20260907.131.1.md',
   'macos-15': 'macos-15-Readme-20260720.0353.1.md',
 };
 
@@ -18,13 +20,22 @@ export async function readFixture(key) {
   return readFile(path.join(FIXTURES, name), 'utf8');
 }
 
-export async function loadFixtureManifest(label) {
-  if (!SNAPSHOTS[label]) {
+export async function loadFixtureManifest(label, key = label) {
+  if (!SNAPSHOTS[key]) {
     return { skipped: true, label, reason: `no fixture for ${label}` };
   }
-  const text = await readFixture(label);
-  return { ...parseManifest(text, label), skipped: false, url: `fixture:${label}`, ref: 'fixture' };
+  const text = await readFixture(key);
+  return { ...parseManifest(text, label), skipped: false, url: `fixture:${key}`, ref: 'fixture' };
 }
+
+/**
+ * A `loadManifest` stand-in that pins a label to one dated snapshot, so a test
+ * can diff two images that really did exist at the same moment.
+ */
+export const fixtureLoader =
+  (aliases = {}) =>
+  (label) =>
+    loadFixtureManifest(label, aliases[label] ?? label);
 
 const RUNNER_FIXTURES = path.join(FIXTURES, 'runners');
 
@@ -89,6 +100,18 @@ export function runnerRoutes({ scopePath, fleet, recorded, releases, listing = n
     }
     return null;
   };
+}
+
+/**
+ * The `--json` document a run printed, past the annotation lines above it.
+ * Found by the line the document opens on: an annotation can contain a brace of
+ * its own, and the rate-limit hint spells out `${{ github.token }}`.
+ */
+export function jsonOf(stdout) {
+  const at = stdout.search(/^\{$/m);
+  if (at < 0) throw new Error(`no JSON document in:
+${stdout}`);
+  return JSON.parse(stdout.slice(at));
 }
 
 /** Capture stdout/stderr from a command function. */

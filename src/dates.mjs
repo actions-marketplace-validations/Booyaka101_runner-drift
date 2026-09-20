@@ -21,10 +21,18 @@ export function daysUntil(date, now = new Date()) {
   return daysFromMs(Date.parse(normalise(date)), now);
 }
 
-/** The same rounding, for a timestamp already in milliseconds. */
+/**
+ * The same count, for a timestamp already in milliseconds.
+ *
+ * Counted from the start of `now`'s UTC day, so a deadline dated 2026-11-19 is
+ * "0 days" for the whole of the 19th rather than flipping to "1 day ago" at
+ * midday. GitHub announces calendar dates; a countdown that changes at noon
+ * both reads as a bug and moves a window boundary half a day early.
+ */
 export function daysFromMs(target, now = new Date()) {
   if (!Number.isFinite(target)) return null;
-  return Math.round((target - now.getTime()) / MS_PER_DAY);
+  const today = Math.floor(now.getTime() / MS_PER_DAY) * MS_PER_DAY;
+  return Math.floor((target - today) / MS_PER_DAY);
 }
 
 /** True when the date is strictly in the past. Never rounded: a boundary matters. */

@@ -1,0 +1,14 @@
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - run: node --version
+  guard:
+    runs-on: ubuntu-latest
+    env:
+      TARGET_IMAGE: ubuntu-26.04
+    steps:
+      - run: node --version

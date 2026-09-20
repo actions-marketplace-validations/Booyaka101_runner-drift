@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { main, EXIT_OK, EXIT_USAGE } from '../src/cli.mjs';
+import { main, OPTIONS, EXIT_OK, EXIT_USAGE } from '../src/cli.mjs';
 import { captureIO } from './helpers.mjs';
 
 async function run(argv) {
@@ -125,6 +125,74 @@ test('guard on a machine with no ImageVersion skips cleanly through main()', asy
     const r = await run(['guard', '--tools', 'node']);
     assert.equal(r.code, EXIT_OK);
     assert.match(r.stdout, /not a GitHub-hosted runner/);
+  } finally {
+    if (saved !== undefined) process.env.ImageVersion = saved;
+  }
+});
+
+test("every fail-on-* input the action declares is forwarded and known to the CLI", async () => {
+  const yml = await readFile(new URL('../action.yml', import.meta.url), 'utf8');
+  const declared = [...yml.matchAll(/^ {2}(fail-on[a-z-]*):$/gm)].map((m) => m[1]);
+  assert.ok(declared.includes('fail-on-migration'), 'the migration gate is an input');
+  for (const name of declared) {
+    assert.ok(name in OPTIONS, `${name} is a CLI flag`);
+    // A value flag reads `args+=(--flag "$RD_X")`, a boolean one `args+=(--flag)`.
+    const passed =
+      yml.includes(`args+=(--${name} `) || yml.includes(`args+=(--${name})`);
+    assert.ok(passed, `action.yml passes --${name} through to the CLI`);
+  }
+});
+
+test('--as-of rejects anything that is not a date', async () => {
+  // A format Date.parse reads in local time is refused rather than landing a
+  // day out, which is the whole reason the flag normalises to UTC.
+  for (const bad of ['tomorrow', '2026-13-45', '', 'Oct 19 2026', '10/19/2026', '2026-10-19T00:00:00 EST']) {
+    const r = await run(['plan', '--from', 'ubuntu-latest', '--as-of', bad]);
+    assert.equal(r.code, EXIT_USAGE, `"${bad}" rejected`);
+    assert.match(r.stderr, /--as-of needs a date such as 2026-10-19/);
+  }
+});
+
+test('--as-of reads a time with no zone in UTC, like the countdowns it moves', async () => {
+  // Left to Date.parse a naive time is local, so the same calendar day lands on
+  // either side of midnight UTC depending on where the runner is.
+  const saved = process.env.ImageVersion;
+  delete process.env.ImageVersion;
+  const at = (asof) =>
+    run([
+      'guard', '--tools', 'node',
+      '--workflows', 'test/fixtures/workflows-retirement',
+      '--fail-on-retirement', '100',
+      '--as-of', asof,
+      '--no-summary',
+    ]);
+  try {
+    for (const form of ['2026-08-12', '2026-08-12T00:00:00', '2026-08-12 00:00', '2026-08-12T00:00:00Z']) {
+      const r = await at(form);
+      assert.match(r.stdout, /macos-14 retires in 82 days/, form);
+    }
+  } finally {
+    if (saved !== undefined) process.env.ImageVersion = saved;
+  }
+});
+
+test('--as-of moves every countdown, without a network call', async () => {
+  const saved = process.env.ImageVersion;
+  delete process.env.ImageVersion;
+  try {
+    const r = await run([
+      'guard',
+      '--tools',
+      'node',
+      '--workflows',
+      'test/fixtures/workflows-retirement',
+      '--fail-on-retirement',
+      '100',
+      '--as-of',
+      '2026-08-12',
+      '--no-summary',
+    ]);
+    assert.match(r.stdout, /macos-14 retires in 82 days/);
   } finally {
     if (saved !== undefined) process.env.ImageVersion = saved;
   }

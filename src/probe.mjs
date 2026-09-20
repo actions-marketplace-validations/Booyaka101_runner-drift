@@ -9,6 +9,8 @@
 
 import { spawnSync } from 'node:child_process';
 
+import { lookup } from './tables.mjs';
+
 const IS_WINDOWS = process.platform === 'win32';
 
 /** canonical tool -> probe recipe(s), tried in order */
@@ -32,7 +34,7 @@ export const PROBES = {
 };
 
 export function isProbeable(tool) {
-  return Boolean(PROBES[tool]);
+  return Boolean(lookup(PROBES, tool));
 }
 
 function runOne(recipe, timeoutMs) {
@@ -58,7 +60,7 @@ function runOne(recipe, timeoutMs) {
  *           {tool, ok:false, reason:string}}
  */
 export function probeTool(tool, { timeoutMs = 15000 } = {}) {
-  const recipes = PROBES[tool];
+  const recipes = lookup(PROBES, tool);
   if (!recipes) return { tool, ok: false, reason: 'no probe recipe' };
   for (const r of recipes) {
     let hit = null;
@@ -76,7 +78,7 @@ export function probeTool(tool, { timeoutMs = 15000 } = {}) {
 
 /** Probe many tools. Never throws. */
 export function probeTools(tools, opts = {}) {
-  const out = {};
+  const out = Object.create(null);
   for (const t of tools) out[t] = probeTool(t, opts);
   return out;
 }

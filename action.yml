@@ -20,6 +20,10 @@ inputs:
     description: 'Fail if a pinned runs-on label browns out or retires within this many days. Empty disables the check.'
     required: false
     default: ''
+  fail-on-migration:
+    description: 'Report, and fail on, an announced migration of a floating runs-on label (ubuntu-latest) starting within this many days. Empty disables the check.'
+    required: false
+    default: ''
   fail-on-deprecation:
     description: 'Fail if this self-hosted runner version loses support within this many days. Needs a token with administration read; empty disables.'
     required: false
@@ -39,7 +43,7 @@ inputs:
   version:
     description: 'npm version of runner-drift to run.'
     required: false
-    default: '1.3.0'
+    default: '1.4.1'
   package:
     description: 'Override the npm spec, e.g. a local .tgz built in the same job. Mainly for testing this action before the version it requests exists on npm.'
     required: false
@@ -77,6 +81,7 @@ runs:
         RD_FAIL_ON_UNKNOWN: ${{ inputs.fail-on-unknown }}
         RD_FAIL_ON: ${{ inputs.fail-on }}
         RD_FAIL_ON_RETIREMENT: ${{ inputs.fail-on-retirement }}
+        RD_FAIL_ON_MIGRATION: ${{ inputs.fail-on-migration }}
         RD_FAIL_ON_DEPRECATION: ${{ inputs.fail-on-deprecation }}
         RD_TOOLS: ${{ inputs.tools }}
         RD_LOCK_FILE: ${{ inputs.lock-file }}
@@ -98,6 +103,7 @@ runs:
             args=(guard --lock-file "$LOCK_ABS" --workflows "$WF_ABS")
             if [ -n "$RD_FAIL_ON" ]; then args+=(--fail-on "$RD_FAIL_ON"); fi
             if [ -n "$RD_FAIL_ON_RETIREMENT" ]; then args+=(--fail-on-retirement "$RD_FAIL_ON_RETIREMENT"); fi
+            if [ -n "$RD_FAIL_ON_MIGRATION" ]; then args+=(--fail-on-migration "$RD_FAIL_ON_MIGRATION"); fi
             if [ -n "$RD_FAIL_ON_DEPRECATION" ]; then args+=(--fail-on-deprecation "$RD_FAIL_ON_DEPRECATION"); fi
             if [ -n "$RD_TOOLS" ]; then args+=(--tools "$RD_TOOLS"); fi
             printf 'lock-file=%s\n' "$RD_LOCK_FILE" >> "$GITHUB_OUTPUT"

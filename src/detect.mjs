@@ -10,6 +10,7 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { COMMAND_ALIASES, SETUP_ACTION_ALIASES, canonicalTool } from './tools.mjs';
 import { isFloating, normaliseLabel } from './labels.mjs';
+import { lookup } from './tables.mjs';
 
 const WORKFLOW_EXT = /\.ya?ml$/i;
 const LABEL_SHAPE = /^(ubuntu|windows|macos)-[a-z0-9.-]+$/i;
@@ -113,9 +114,23 @@ export function commandsInScript(script) {
     const token = s.split(/\s+/)[0];
     if (!token) continue;
     const base = token.split(/[\\/]/).pop().replace(/\.(exe|cmd|bat)$/i, '');
-    if (COMMAND_ALIASES[base.toLowerCase()]) found.add(base.toLowerCase());
+    if (lookup(COMMAND_ALIASES, base.toLowerCase())) found.add(base.toLowerCase());
   }
   return [...found];
+}
+
+/**
+ * Drop a YAML inline comment: a `#` at the start of the line or after a space.
+ *
+ * Found by searching rather than matching to the end of the line, for the same
+ * reason `readScalar` does: `[^\r\n]*$` before an anchor is the quadratic shape,
+ * and a line holding a stray CR makes every `#` rescan to it (LESSONS
+ * 2026-09-09).
+ */
+function stripComment(text) {
+  if (text.startsWith('#')) return '';
+  const at = text.search(/[ \t]#/);
+  return at === -1 ? text : text.slice(0, at + 1);
 }
 
 /** 1-indexed column of the label inside a raw scalar that may be padded or quoted. */
@@ -125,11 +140,67 @@ function labelColumn(start, raw) {
 }
 
 /**
+ * One `runs-on:`-shaped value, from the line its key is on: a scalar, a flow
+ * sequence, or a block list below. Returns the last line index it consumed.
+ *
+ * `runs-on:` also takes a mapping of `group:` and `labels:`, and the labels
+ * under it are written in those same three shapes, so that branch calls back in
+ * here rather than repeating them. A group names a pool, not a label, and is
+ * the one key whose value must never be read as one.
+ */
+function readTarget(lines, i, baseIndent, rawValue, push) {
+  const raw = stripComment(rawValue);
+  const value = raw.trim();
+  const valueStart = lines[i].length - rawValue.length;
+  let expression = false;
+
+  if (value.includes('${{')) return { end: i, expression: true };
+
+  if (value.startsWith('[')) {
+    let offset = valueStart + lines[i].slice(valueStart).indexOf('[') + 1;
+    for (const part of value.replace(/^\[|\]$/g, '').split(',')) {
+      if (part.includes('${{')) expression = true;
+      else push(part, i + 1, labelColumn(offset, part));
+      offset += part.length + 1;
+    }
+    return { end: i, expression };
+  }
+
+  if (value) {
+    push(value, i + 1, labelColumn(valueStart, raw));
+    return { end: i, expression };
+  }
+
+  let end = i;
+  for (let j = i + 1; j < lines.length; j++) {
+    const l = lines[j];
+    if (l.trim() === '') continue;
+    if (indentOf(l) <= baseIndent) break;
+    const mapping = l.match(/^([ \t]*)(group|labels):[ \t]*([^\r\n]*)/);
+    if (mapping) {
+      if (mapping[2] === 'labels') {
+        const inner = readTarget(lines, j, mapping[1].length, mapping[3], push);
+        expression = expression || inner.expression;
+        j = inner.end;
+      }
+      end = j;
+      continue;
+    }
+    const dash = l.match(/^([ \t]*-[ \t]*)([^\r\n]*)/);
+    const item = stripComment(dash ? dash[2] : l.trim()).trim();
+    if (item.includes('${{')) expression = true;
+    else push(item, j + 1, labelColumn(dash ? dash[1].length : indentOf(l), item));
+    end = j;
+  }
+  return { end, expression };
+}
+
+/**
  * Every `runs-on:` value in a document, positioned. `expression` reports
  * whether any value was a `${{ … }}` reference, which is what makes the
  * matrix fallback below kick in.
  *
- * Two shapes here are load-bearing for linear time, and both were quadratic
+ * Two shapes are load-bearing for linear time, and both were quadratic
  * before 1.2.0 (CodeQL js/polynomial-redos). Indentation is `[ \t]`, not `\s`,
  * and the value is `([^\r\n]*)` with no `$`. The pair matters: `\s*(.*)$` lets
  * both quantifiers match a space, and `$` can fail because `.` excludes line
@@ -157,47 +228,94 @@ function scanRunsOn(lines) {
   for (let i = 0; i < lines.length; i++) {
     const m = lines[i].match(/^([ \t]*)runs-on:[ \t]*([^\r\n]*)/);
     if (!m) continue;
-    const baseIndent = m[1].length;
-    const value = m[2].trim();
-    const valueStart = lines[i].length - m[2].length;
 
     // Anchored on the `runs-on:` line itself: the set is the target, so pointing
     // at one item of a block list would be arbitrary.
-    target = { labels: [], expression: false, line: i + 1, col: valueStart + 1 };
+    target = {
+      labels: [],
+      expression: false,
+      line: i + 1,
+      col: lines[i].length - m[2].length + 1,
+    };
     targets.push(target);
 
-    if (!value) {
-      for (let j = i + 1; j < lines.length; j++) {
-        const l = lines[j];
-        if (l.trim() === '') continue;
-        if (indentOf(l) <= baseIndent) break;
-        const dash = l.match(/^([ \t]*-[ \t]*)([^\r\n]*)/);
-        const item = dash ? dash[2] : l.trim();
-        if (item.includes('${{')) expression = target.expression = true;
-        else push(item, j + 1, labelColumn(dash ? dash[1].length : indentOf(l), item));
-        i = j;
-      }
-    } else if (value.startsWith('[')) {
-      let offset = valueStart + lines[i].slice(valueStart).indexOf('[') + 1;
-      for (const part of value.replace(/^\[|\]$/g, '').split(',')) {
-        if (part.includes('${{')) expression = target.expression = true;
-        else push(part, i + 1, labelColumn(offset, part));
-        offset += part.length + 1;
-      }
-    } else if (value.includes('${{')) {
-      expression = target.expression = true;
-    } else {
-      push(value, i + 1, labelColumn(valueStart, m[2]));
-    }
+    const read = readTarget(lines, i, m[1].length, m[2], push);
+    if (read.expression) expression = target.expression = true;
+    i = read.end;
   }
   return { found, targets, expression };
 }
 
-/** `runs-on: ${{ matrix.os }}` -> the label-shaped scalars elsewhere in the file. */
+/**
+ * An expression `runs-on:` -> the label-shaped scalars elsewhere in the file.
+ *
+ * Which one a given runner serves is not decidable from the file, so this is
+ * deliberately broad: `${{ matrix.os }}`, `${{ inputs.runner }}` and
+ * `${{ env.RUNNER }}` all resolve to values written somewhere above.
+ *
+ * Broad, but not everything. Comments, block scalars and the keys that hold
+ * prose or shell rather than a value (`run:`, `name:`, `run-name:`, `if:`,
+ * `description:`) are skipped: a label named there is not a runner the workflow
+ * asks for, and an annotation has to land on a line someone can act on.
+ */
+const PROSE_KEYS = new Set(['run', 'name', 'run-name', 'if', 'description']);
+
+/**
+ * Whether the lines under an empty prose key are its body rather than a map.
+ * `inputs.name.default` is a value a `runs-on:` expression can resolve to; the
+ * indented text under a step's `name:` is the title continued.
+ */
+function foldsOver(lines, i, indent) {
+  for (let j = i + 1; j < lines.length; j++) {
+    const text = stripComment(lines[j]);
+    if (!text.trim()) continue;
+    if (indentOf(text) <= indent) return false;
+    return !/^[ \t]*(-[ \t]+)?[^:\s][^:\r\n]*:([ \t]|$)/.test(text);
+  }
+  return false;
+}
+
 function matrixLabels(lines) {
   const found = [];
+  let scalar = null;
+  let matrixAt = null;
+  let strategyAt = null;
   for (let i = 0; i < lines.length; i++) {
-    for (const tok of lines[i].matchAll(/[A-Za-z][A-Za-z0-9.-]*/g)) {
+    const text = stripComment(lines[i]);
+    if (scalar !== null) {
+      if (!text.trim() || indentOf(text) > scalar) continue;
+      scalar = null;
+    }
+    // The key cannot start with a space: nothing mandatory separates it from the
+    // indent, and both matching whitespace is how a line of spaces with no colon
+    // went quadratic in 1.2.0.
+    const key = text.match(/^([ \t]*)(-[ \t]+)?([^:\s][^:\r\n]*)?:([^\r\n]*)$/);
+    if (key) {
+      // `run: |` and friends: the body below is shell or prose, not YAML values.
+      // A prose key owns its indented lines the same way whether or not it was
+      // written with a block marker, since a plain scalar folds over them too.
+      // A dashed key owns the column the dash sits in, so the step's own
+      // siblings (`env:`, `with:`) are not read as part of the script.
+      const value = key[4].trim();
+      const owns = key[1].length + (key[2]?.length ?? 0);
+      const name = (key[3] ?? '').trim().toLowerCase();
+      // Under `matrix:` every key is a dimension the job varies over, so a
+      // `matrix.name` of image labels is values, not a step title.
+      if (matrixAt !== null && key[1].length <= matrixAt) matrixAt = null;
+      if (strategyAt !== null && key[1].length <= strategyAt) strategyAt = null;
+      const prose = matrixAt === null && PROSE_KEYS.has(name);
+      // Only `strategy.matrix` is one. A job may be called `matrix`, and its
+      // steps still have titles.
+      if (name === 'matrix' && strategyAt !== null && key[1].length > strategyAt) {
+        matrixAt = key[1].length;
+      }
+      if (name === 'strategy') strategyAt = key[1].length;
+      if (/^[|>]/.test(value) || (prose && (value || foldsOver(lines, i, owns)))) {
+        scalar = owns;
+        continue;
+      }
+    }
+    for (const tok of text.matchAll(/[A-Za-z][A-Za-z0-9.-]*/g)) {
       if (LABEL_SHAPE.test(tok[0])) {
         found.push({ label: tok[0].toLowerCase(), line: i + 1, col: tok.index + 1 });
       }
@@ -206,13 +324,39 @@ function matrixLabels(lines) {
   return found;
 }
 
+/**
+ * One pass over a document for everything the label scanners want: the
+ * positioned `runs-on:` values, the sets they came in, the matrix fallback and
+ * the job id per line. The last two are lazy because only some callers want
+ * them, and `analyseWorkflow` hands one walk to all four rather than repeating
+ * it per extractor.
+ */
+function walkLabels(text) {
+  const lines = String(text ?? '').split(/\r?\n/);
+  const scan = scanRunsOn(lines);
+  let matrix = null;
+  let jobs = null;
+  return {
+    ...scan,
+    lines,
+    get matrix() {
+      return (matrix ??= scan.expression ? matrixLabels(lines) : []);
+    },
+    get jobs() {
+      return (jobs ??= jobKeys(lines));
+    },
+  };
+}
+
 /** Pull `runs-on:` labels (inline scalar, inline flow list, block list, matrix refs). */
 export function extractLabels(text) {
-  const lines = String(text ?? '').split(/\r?\n/);
-  const { found, expression } = scanRunsOn(lines);
+  return labelsIn(walkLabels(text));
+}
+
+function labelsIn({ lines, found, expression, matrix }) {
   const labels = new Set(found.map((f) => f.label));
   if (expression) {
-    for (const { label } of matrixLabels(lines)) labels.add(label);
+    for (const { label } of matrix) labels.add(label);
     for (const line of lines) {
       if (/(^|\s)self-hosted(\s|$|,|\]|')/.test(line) && /runs-on|matrix|os:|- /.test(line)) {
         labels.add(SELF_HOSTED);
@@ -223,24 +367,193 @@ export function extractLabels(text) {
 }
 
 /**
- * Where each `runs-on` label sits: `{label, file, line, col}` per occurrence,
- * 1-indexed, `col` on the label text so a `file=,line=,col=` annotation lands
- * on it. Self-hosted and floating labels are skipped, having no fixed date to
- * retire on.
+ * The job id every line belongs to, 0-indexed to match `lines`.
+ *
+ * `guard` reads one runner's image, and that image says something about a label
+ * only if the job it is running asked for that label. The job id is the one
+ * thing in the file that ties a `runs-on:` to the `GITHUB_JOB` a runner exports.
  */
-export function extractLabelSites(text, file = null) {
-  const lines = String(text ?? '').split(/\r?\n/);
-  const { found, expression } = scanRunsOn(lines);
+function jobKeys(lines) {
+  const at = new Array(lines.length).fill(null);
+  let jobsIndent = null;
+  let jobIndent = null;
+  let current = null;
+  let ended = false;
+  for (let i = 0; i < lines.length; i++) {
+    const m = ended ? null : lines[i].match(/^([ \t]*)([^-\s#][^:\r\n]*):/);
+    if (m) {
+      const indent = m[1].length;
+      const key = m[2].trim().replace(/^(['"])(.*)\1$/, '$2');
+      if (jobsIndent === null) {
+        // Top level only: `on.workflow_dispatch.inputs.jobs` is not the map.
+        if (key === 'jobs' && indent === 0) jobsIndent = indent;
+      } else if (indent <= jobsIndent) {
+        // The next top-level key closes the map. A key further down at the job
+        // indent belongs to that key, and inventing a job id for it can put a
+        // runner's image on a job that GITHUB_JOB names somewhere else.
+        current = null;
+        ended = true;
+      } else if (jobIndent === null || indent === jobIndent) {
+        jobIndent = indent;
+        current = key;
+      }
+    }
+    at[i] = current;
+  }
+  return at;
+}
+
+/**
+ * Where each `runs-on` label sits: `{label, file, line, col, job}` per
+ * occurrence, 1-indexed, `col` on the label text so a `file=,line=,col=`
+ * annotation lands on it. `keep` decides which labels are worth a site, because
+ * the two lanes that want one want disjoint halves of the same walk.
+ *
+ * `viaMatrix` marks a label read out of a matrix rather than off a `runs-on:`
+ * line. Its job is right, but which leg of the matrix any one runner is serving
+ * is not written anywhere in the file. A `workflow_call` input default and a
+ * top-level `env:` value sit above the jobs map and so have no job of their own;
+ * they carry `jobs`, the ids whose `runs-on:` is an expression, instead.
+ */
+function labelSitesWhere(walk, file, keep) {
+  const { found, expression, matrix, targets, jobs } = walk;
+  const jobOf = (line) => jobs[line - 1] ?? null;
+
+  // The matrix fallback is a whole-file token scan, so it only says which job a
+  // label sits in, not which job could be scheduled by it. A job whose own
+  // `runs-on:` is a plain label is scheduled by that label and nothing else, and
+  // a label-shaped `env:` value under it is not a runner it asks for. A job with
+  // no `runs-on:` at all is a `uses:` call, and the label it hands the callee in
+  // `with:` is still a runner this file asks for.
+  const asks = expression
+    ? new Set(targets.filter((t) => t.expression).map((t) => jobOf(t.line)))
+    : new Set();
+  const names = new Set(targets.map((t) => jobOf(t.line)));
+
+  // A label an expression resolves to need not sit in the jobs map at all: a
+  // `workflow_call` input default and a top-level `env:` value both live above
+  // it. The jobs it can serve are the ones whose `runs-on:` is an expression.
+  const viaExpression = [...asks].filter(Boolean);
+
   const seen = new Set();
   const sites = [];
-  for (const { label, line, col } of expression ? [...found, ...matrixLabels(lines)] : found) {
-    if (label === SELF_HOSTED || isFloating(label)) continue;
+  const all = expression ? [...found, ...matrix.map((m) => ({ ...m, viaMatrix: true }))] : found;
+  for (const { label, line, col, viaMatrix } of all) {
+    if (!keep(label)) continue;
     const key = `${label}@${line}:${col}`;
     if (seen.has(key)) continue;
+    const job = jobOf(line);
+    if (viaMatrix && job !== null && names.has(job) && !asks.has(job)) continue;
     seen.add(key);
-    sites.push({ label, file, line, col });
+    const site = { label, file, line, col, job };
+    if (viaMatrix) site.viaMatrix = true;
+    // One annotation per position, so the jobs a label off the map can serve
+    // travel with it rather than becoming a site each.
+    if (viaMatrix && job === null && viaExpression.length) site.jobs = viaExpression;
+    sites.push(site);
   }
   return sites;
+}
+
+const isPinned = (label) => label !== SELF_HOSTED && !isFloating(label);
+
+/** Pinned image labels: what the retirement lane dates. */
+export function extractLabelSites(text, file = null) {
+  return labelSitesWhere(walkLabels(text), file, isPinned);
+}
+
+/** Floating labels: what the migration lane dates, and nothing else can. */
+export function extractFloatingSites(text, file = null) {
+  return labelSitesWhere(walkLabels(text), file, isFloating);
+}
+
+/**
+ * The workflow file and job id of the job this process is running in, or null
+ * outside Actions. `GITHUB_WORKFLOW_REF` is
+ * `owner/repo/.github/workflows/ci.yml@refs/heads/main`; only the file name is
+ * kept, since the scan may have been pointed at a copy of the directory.
+ */
+export function runningJob(env = process.env) {
+  const job = env.GITHUB_JOB || null;
+  if (!job) return null;
+  const ref = env.GITHUB_WORKFLOW_REF || '';
+  return { job, file: ref ? path.basename(ref.split('@')[0]) : null };
+}
+
+/**
+ * Where the running job sits in a scan: what to match sites against, and
+ * whether that identity picks out one job.
+ *
+ * The file name is dropped from the comparison when no scanned site carries
+ * this job id in the file the run reports: a job inside a reusable workflow
+ * reports the calling file in `GITHUB_WORKFLOW_REF` while its id lives in the
+ * callee, and a scan pointed at a copy of the directory need not match either.
+ * The job id still has to agree, but on its own it is only unique within a
+ * file, so `pinned` is false and the caller is looking at every job in the
+ * repository that shares the id.
+ */
+export function jobScope(here, sites = []) {
+  if (!here) return { at: null, pinned: false, match: () => false };
+  const pinned = Boolean(here.file) && sites.some((site) => siteInJob(site, here));
+  const at = pinned ? here : { ...here, file: null };
+  return { at, pinned, match: (site) => siteInJob(site, at) };
+}
+
+/** A predicate for "this site is one the running job was scheduled from". */
+export function jobMatcher(here, sites = []) {
+  return jobScope(here, sites).match;
+}
+
+/**
+ * Who asked for `label` here, and whether anything else asks for `observed` too.
+ *
+ * `sites` are this label's, `others` is every other site the scan found. Both
+ * are needed to place the running job: a job id is unique within a file, not
+ * across a repository, so the file has to decide when two files use the same id.
+ *
+ * Without a running job every site in the repository is in scope, and the
+ * caller has to decide how much that is worth. `placed` is the stronger claim
+ * that the job id picked out one job.
+ * `direct` is a plain `runs-on: <label>`, `asked` includes reaching the label
+ * through a matrix, and `rival` is another site naming `observed`, which the
+ * runner is as likely to be serving as the floating one. `named` says that
+ * rival is a plain `runs-on:` rather than a matrix leg, which is the difference
+ * between two jobs sharing an id and one job with two legs. `alone` is whether
+ * every file holding a job of this id asks for `label` in it, which is what an
+ * unplaced `direct` is worth: one of two `build` jobs runs on Windows, and the
+ * run cannot say which one it is.
+ *
+ * Inside one job the only rival is a matrix leg, since a job has one `runs-on:`.
+ * That needs the job to be pinned to a file. A job id alone can name a job in
+ * every file that uses it, and then a plain `runs-on: <observed>` under the
+ * same id is as good an explanation as this label, exactly as it is when there
+ * is no job id at all.
+ */
+export function labelOwnership({ label, observed = null, sites = [], others = [], here = null }) {
+  const { match, pinned } = jobScope(here, [...sites, ...others]);
+  const inScope = here ? match : () => true;
+  const mine = sites.filter((site) => site.label === label && inScope(site));
+  const rivals = others.filter((site) => site.label === observed && inScope(site));
+  const asking = new Set(mine.map((site) => site.file));
+  const alone = [...sites, ...others]
+    .filter((site) => inScope(site))
+    .every((site) => asking.has(site.file));
+  return {
+    placed: pinned,
+    direct: mine.some((site) => !site.viaMatrix),
+    asked: mine.length > 0,
+    rival: observed !== null && (pinned ? rivals.some((site) => site.viaMatrix) : rivals.length > 0),
+    named: observed !== null && rivals.some((site) => !site.viaMatrix),
+    alone: pinned || alone,
+  };
+}
+
+/** Is this `runs-on:` site the one the running job was scheduled from? */
+export function siteInJob(site, here) {
+  const owns = site?.job ? site.job === here?.job : Boolean(site?.jobs?.includes(here?.job));
+  if (!here || !owns) return false;
+  if (!here.file || !site.file) return true;
+  return path.basename(site.file).toLowerCase() === here.file.toLowerCase();
 }
 
 /**
@@ -252,8 +565,10 @@ export function extractLabelSites(text, file = null) {
  * and no labels, since which runner serves them is not decidable from the file.
  */
 export function extractRunsOnTargets(text, file = null) {
-  const lines = String(text ?? '').split(/\r?\n/);
-  const { targets } = scanRunsOn(lines);
+  return targetsIn(walkLabels(text), file);
+}
+
+function targetsIn({ targets }, file) {
   return targets.map((t) => ({
     labels: [...new Set(t.labels)],
     expression: t.expression,
@@ -339,7 +654,7 @@ function actionSlug(ref) {
 export function setupTools(usesSites) {
   const tools = new Set();
   for (const { ref } of usesSites) {
-    const tool = SETUP_ACTION_ALIASES[actionSlug(ref)];
+    const tool = lookup(SETUP_ACTION_ALIASES, actionSlug(ref));
     if (tool) tools.add(tool);
   }
   return [...tools];
@@ -352,9 +667,12 @@ export function extractSetupActions(text) {
 
 /** Analyse one workflow document. */
 export function analyseWorkflow(text, file = null) {
-  const labels = extractLabels(text);
-  const labelSites = extractLabelSites(text, file);
-  const runsOnTargets = extractRunsOnTargets(text, file);
+  const walk = walkLabels(text);
+  const labels = labelsIn(walk);
+  const sites = labelSitesWhere(walk, file, () => true);
+  const labelSites = sites.filter((s) => isPinned(s.label));
+  const floatingSites = sites.filter((s) => isFloating(s.label));
+  const runsOnTargets = targetsIn(walk, file);
   const uses = extractUses(text, file);
   const commands = new Set();
   for (const script of extractRunScripts(text)) {
@@ -362,7 +680,16 @@ export function analyseWorkflow(text, file = null) {
   }
   const tools = new Set([...commands].map((c) => canonicalTool(c)));
   for (const t of setupTools(uses)) tools.add(t);
-  return { file, labels, labelSites, runsOnTargets, uses, commands: [...commands].sort(), tools: [...tools].sort() };
+  return {
+    file,
+    labels,
+    labelSites,
+    floatingSites,
+    runsOnTargets,
+    uses,
+    commands: [...commands].sort(),
+    tools: [...tools].sort(),
+  };
 }
 
 async function listWorkflowFiles(dir) {
@@ -382,7 +709,8 @@ async function listWorkflowFiles(dir) {
 /**
  * Scan a directory of workflows (or a single workflow file).
  * @returns {{dir:string, files:string[], labels:string[], labelSites:object[],
- *            tools:string[], perFile:object[], missing:boolean}}
+ *            floatingSites:object[], tools:string[], perFile:object[],
+ *            missing:boolean}}
  */
 export async function detect(workflowsPath) {
   const target = workflowsPath || path.join('.github', 'workflows');
@@ -403,6 +731,7 @@ export async function detect(workflowsPath) {
         files: [],
         labels: [],
         labelSites: [],
+        floatingSites: [],
         runsOnTargets: [],
         uses: [],
         tools: [],
@@ -415,6 +744,7 @@ export async function detect(workflowsPath) {
   const perFile = [];
   const labels = new Set();
   const labelSites = [];
+  const floatingSites = [];
   const runsOnTargets = [];
   const uses = [];
   const tools = new Set();
@@ -424,6 +754,7 @@ export async function detect(workflowsPath) {
     perFile.push(r);
     for (const l of r.labels) labels.add(l);
     labelSites.push(...r.labelSites);
+    floatingSites.push(...r.floatingSites);
     runsOnTargets.push(...r.runsOnTargets);
     uses.push(...r.uses);
     for (const t of r.tools) tools.add(t);
@@ -434,6 +765,7 @@ export async function detect(workflowsPath) {
     files,
     labels: [...labels].sort(),
     labelSites,
+    floatingSites,
     runsOnTargets,
     uses,
     tools: [...tools].sort(),

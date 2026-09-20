@@ -9,7 +9,7 @@ import {
 } from '../src/report.mjs';
 import { detect } from '../src/detect.mjs';
 import { runGuard, EXIT_OK, EXIT_DRIFT, EXIT_USAGE } from '../src/cli.mjs';
-import { captureIO, FIXTURES } from './helpers.mjs';
+import { captureIO, FIXTURES, jsonOf } from './helpers.mjs';
 
 // At this date macos-14 browns out in 54 days and retires in 82;
 // ubuntu-22.04 is 223 and 248 days out.
@@ -34,6 +34,16 @@ test('nextBrownout returns the first window on or after now', () => {
 test('nextBrownout is null for unknown labels', () => {
   assert.equal(nextBrownout('ubuntu-24.04', NOW), null);
   assert.equal(nextBrownout('not-a-label', NOW), null);
+});
+
+test('a runs-on named after a property of Object has no deadline', () => {
+  // The bogus status that Object.prototype handed back had no migrateTo, and
+  // the annotation that follows a finding joins that list into a sentence.
+  for (const name of ['constructor', 'toString', 'valueOf']) {
+    assert.equal(nextBrownout(name, NOW), null, name);
+    assert.equal(retirementStatus(name, NOW), null, name);
+    assert.deepEqual(retirementFindings([{ label: name, file: 'ci.yml', line: 5, col: 14 }], { now: NOW, days: 90 }), [], name);
+  }
 });
 
 /* -------------------------------------------------------- retirementStatus */
@@ -182,6 +192,19 @@ test('a retired label reads "retired N days ago"', () => {
   assert.match(line, /retired 60 days ago — fully unsupported since 2026-11-02/);
 });
 
+test('the last day before retirement reads "1 day", not "1 days"', () => {
+  const eve = retirementFindings(SITES, { now: new Date('2026-11-01T00:00:00Z'), days: 5 });
+  const [soon] = retirementAnnotations(eve);
+  assert.match(soon, /title=runner-drift: macos-14 retires in 1 day::/);
+  assert.match(retirementSummaryMarkdown(eve), /2026-11-02 \(1 day\)/);
+
+  const morning = retirementFindings(SITES, { now: new Date('2026-11-03T00:00:00Z'), days: 0 });
+  const [gone] = retirementAnnotations(morning);
+  assert.match(gone, /title=runner-drift: macos-14 retired 1 day ago::/);
+  assert.match(gone, /retired 1 day ago . fully unsupported since 2026-11-02/);
+  assert.match(retirementSummaryMarkdown(morning), /2026-11-02 \(retired 1 day ago\)/);
+});
+
 /* ------------------------------------------------ retirementSummaryMarkdown */
 
 test('summary markdown has the six columns, one row per site', () => {
@@ -195,13 +218,13 @@ test('summary markdown has the six columns, one row per site', () => {
 
 /* ---------------------------------------------------------------- runGuard */
 
-async function guard(opts, env = {}) {
+async function guard(opts, env = {}, now = NOW) {
   const cap = captureIO();
   const code = await runGuard(
     { summary: true, 'update-lock': true, ...opts },
     cap.io,
     env,
-    { now: NOW },
+    { now },
   );
   return { code, stdout: cap.stdout, stderr: cap.stderr };
 }
@@ -215,6 +238,16 @@ test('guard --fail-on-retirement=60 fails a plain lint job on the macos-14 site'
   assert.match(lines[0], /macos-14/);
   assert.ok(!r.stdout.includes('ubuntu-22.04 is fully unsupported'), 'ubuntu-22.04 not flagged at 60');
   assert.match(r.stderr, /runner-drift: macos-14 is fully unsupported on 2026-11-02 \(82 days\) and --fail-on-retirement 60 is set\./);
+});
+
+test('the failure line counts a single day in the singular too', async () => {
+  const r = await guard(
+    { workflows: WORKFLOWS, 'fail-on-retirement': '5' },
+    {},
+    new Date('2026-11-01T00:00:00Z'),
+  );
+  assert.equal(r.code, EXIT_DRIFT);
+  assert.match(r.stderr, /macos-14 is fully unsupported on 2026-11-02 \(1 day\) and --fail-on-retirement 5 is set\./);
 });
 
 test('guard --fail-on-retirement=10 exits 0 with no annotations', async () => {
@@ -278,8 +311,7 @@ test('retirement rides along with the normal guard flow and its JSON', async () 
       { ImageVersion: '20260720.234.2', ImageOS: 'ubuntu22' },
     );
     assert.equal(r.code, EXIT_DRIFT);
-    const jsonStart = r.stdout.indexOf('{');
-    const parsed = JSON.parse(r.stdout.slice(jsonStart));
+    const parsed = jsonOf(r.stdout);
     assert.equal(parsed.baseline, true);
     assert.equal(parsed.retirement.days, 60);
     assert.equal(parsed.retirement.findings.length, 1);

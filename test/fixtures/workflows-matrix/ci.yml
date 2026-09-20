@@ -1,0 +1,11 @@
+name: ci
+on: [push]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, ubuntu-26.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - run: node --version

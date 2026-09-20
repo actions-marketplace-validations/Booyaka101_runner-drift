@@ -1,3 +1,5 @@
+import { lookup } from './tables.mjs';
+
 /**
  * The alias table: shell command -> canonical tool name, and canonical tool
  * name -> the names that tool goes by in runner-images manifests.
@@ -60,8 +62,8 @@ export const MANIFEST_CANDIDATES = {
 export function canonicalTool(name) {
   if (!name) return null;
   const key = String(name).trim();
-  if (MANIFEST_CANDIDATES[key]) return key;
-  const alias = COMMAND_ALIASES[key.toLowerCase()];
+  if (lookup(MANIFEST_CANDIDATES, key)) return key;
+  const alias = lookup(COMMAND_ALIASES, key.toLowerCase());
   if (alias) return alias;
   // Case-insensitive match against canonical names.
   const hit = Object.keys(MANIFEST_CANDIDATES).find((k) => k.toLowerCase() === key.toLowerCase());
@@ -69,7 +71,7 @@ export function canonicalTool(name) {
 }
 
 export function manifestCandidates(tool) {
-  return MANIFEST_CANDIDATES[tool] ?? [tool];
+  return lookup(MANIFEST_CANDIDATES, tool) ?? [tool];
 }
 
 export function knownTools() {

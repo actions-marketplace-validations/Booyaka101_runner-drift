@@ -4,6 +4,409 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] — 2026-09-20
+
+### Fixed
+
+- **`runs-on:` in its mapping form is now scanned** ([#12](https://github.com/Booyaka101/runner-drift/issues/12)).
+  A job that targets a runner group writes its labels under a mapping:
+
+  ```yaml
+  runs-on:
+    group: default
+    labels: [ubuntu-22.04]
+  ```
+
+  The scanner took whatever followed `runs-on:` as the label text, so this form
+  yielded nothing and the job was skipped in silence. A repo on a runner group
+  pinning a retiring image was told it had nothing to migrate, and the same job
+  never showed up in the `ubuntu-latest` migration lane either. It had been that
+  way since 1.0.0.
+
+  `labels:` takes the same three shapes `runs-on:` does (scalar, flow sequence,
+  block list), so the read loop was extracted into one function that calls back
+  into itself for the mapping rather than growing a fourth copy of those branches.
+  `group:` names a pool, not a label, and is never read as one. The annotation
+  points at the label where it sits, the same as every other form, and the labels
+  under one mapping stay one target, so `--label` matching and the migration lane
+  treat them as the set a runner has to carry.
+
+## [1.4.0] — 2026-09-20
+
+### Added
+
+- **The `ubuntu-latest` migration lane.** GitHub's changelog of 2026-09-17: *"The
+  ubuntu-latest label will migrate from Ubuntu 24.04 to Ubuntu 26.04. This
+  migration will roll out gradually between October 19 and November 19, 2026."*
+  ([actions/runner-images#14748](https://github.com/actions/runner-images/issues/14748)).
+
+  For that month `ubuntu-latest` is two different operating systems depending on
+  which runner the job lands on, and no workflow file changes. The kernel goes
+  `6.17.0-1022-azure` -> `7.0.0-1012-azure` and systemd `255.4-1ubuntu8.17` ->
+  `259.5-0ubuntu3.4`, while Docker Buildx, the AWS and Azure CLIs, Rust and Java
+  17 are the same on both images. That is exactly the kind of change this tool
+  exists to show you before it lands.
+
+  `MIGRATIONS` in `src/labels.mjs` records the announced moves: the floating
+  label, the two concrete labels it moves between, the window and the source
+  issue. It sits beside the retirement `DEADLINES` table rather than inside it,
+  and shares no keys with it: a retirement is an end date for one image, a
+  migration is a dated window between two live ones. Today it has one entry.
+  `windows-latest` and `macos-latest` are a data addition when GitHub announces
+  them.
+
+- **`plan --from <floating label>`** no longer refuses. Where `MIGRATIONS` names
+  both ends, `plan` resolves them and diffs the two concrete images, so the
+  output is the kernel and systemd deltas rather than a bare warning:
+
+  ```
+  $ runner-drift plan --from ubuntu-latest
+  ubuntu-latest moves from ubuntu-24.04 to ubuntu-26.04. The rollout starts 2026-10-19 (18 days) and finishes 2026-11-19 (49 days).
+  announced 2026-09-17; source actions/runner-images#14748 https://github.com/actions/runner-images/issues/14748
+  ubuntu-24.04 -> ubuntu-26.04 (images 20260907.300.1 -> 20260907.131.1)
+  ubuntu-24.04 has no announced deprecation deadline in runner-drift's table.
+
+  OS 24.04.5 LTS -> 26.04.1 LTS  MAJOR
+  Kernel 6.17.0-1022-azure -> 7.0.0-1012-azure  MAJOR
+  Systemd 255.4-1ubuntu8.17 -> 259.5-0ubuntu3.4  MAJOR
+  ```
+
+  A floating `--to`, or a floating `--from` with no announced migration, is
+  refused exactly as before. `plan` also gained the three image-header rows (OS,
+  kernel, systemd) for every comparison, not just this one, since they were being
+  parsed already and dropped.
+
+- **`guard --fail-on-migration <days>`**, and the matching `fail-on-migration`
+  action input. Off by default, like `fail-on-retirement`: without it `guard`
+  does not fetch the two manifests at all. With it, each floating `runs-on:` line
+  is annotated according to where today sits in the window and which `ImageOS`
+  the runner exported: pending, this runner has not moved yet, the migration has
+  reached this runner, done, or, past the window on the old image, an anomaly.
+  A rollout running past its announced end is annotated `::error` and reported,
+  and does not fail the build: GitHub ran both previous `latest` moves late, and
+  a failure no threshold turns off is one people remove the check over. An image
+  that is neither end of the window does fail whatever the threshold, because
+  that is the label meaning something nobody announced.
+
+  `ImageOS` describes one runner, and that runner is serving one job, so it is
+  read as evidence about a floating label only when the job it is running asked
+  for that label: `GITHUB_JOB` and `GITHUB_WORKFLOW_REF` say which job, and the
+  scan already knows which job each `runs-on:` belongs to. A lint step pinned to
+  `ubuntu-22.04` in a repo that uses `ubuntu-latest` elsewhere reports the window
+  from the calendar alone and says why, instead of announcing that
+  `ubuntu-latest` has gone somewhere unrecognised. Where the label is reached
+  through a matrix, or the check runs with no `GITHUB_JOB` at all, the image is
+  still attributed if it is one of the two the window names.
+
+  When the observed image explains the tool drift `guard` just found, the report
+  says so, rather than leaving a page of major bumps looking unexplained. That
+  line needs no input, only the job that was actually moved: a lock recorded on
+  one side of an announced move, a runner on the other, and a workflow that asked
+  for the floating label. A repo that bumps a pinned `ubuntu-24.04` to
+  `ubuntu-26.04` by hand is not told GitHub did it.
+
+  ```
+  Explained by the scheduled ubuntu-latest migration ubuntu-24.04 -> ubuntu-26.04 (2026-10-19 to 2026-11-19); the tool versions below moved with the image.
+  ```
+
+  `--fail-on`, `--fail-on-retirement` and `--fail-on-deprecation` are untouched,
+  and so are all four output formats' existing contents: the migration is a new
+  annotation group, a new step-summary table (Label, Status, Move, Window, This
+  runner, Source) and a new `migration` key in `--json`.
+
+- **`--as-of <date>`** on every command that counts down to something (`guard`, `plan`, `runners`, `actions`). It moves the clock every countdown is
+  measured from and nothing else, so `plan --from ubuntu-latest --as-of
+  2026-10-19` answers what the report will say on the first day of the rollout
+  without pretending the run happened then. A date, or a time with no zone, is
+  read as UTC, which is the calendar the countdowns themselves use. It is also
+  what makes the migration tests deterministic.
+
+- `init` refusing a floating label now points at the migration when there is one,
+  instead of only saying "pass a concrete label".
+
+### Changed
+
+- Every countdown is now whole calendar days from today, not hours divided by 24
+  and rounded. A deadline dated 2026-11-19 reads "0 days" for the whole of the
+  19th rather than flipping to "1 day ago" at midday, and the printed date and
+  the number beside it can no longer disagree. Some `runners` countdowns move by
+  a day: `2.335.1 runtime ends 2026-09-24` was "(16 days)" on 2026-09-09 and is
+  now "(15 days)", which is the number of days you can actually still run it.
+  `--fail-on-deprecation` and `--fail-on-retirement` compare against that same
+  number, so a threshold sitting exactly on a boundary can fire a day later than
+  it did in 1.3.0.
+
+- The exported `runGuard` now writes the lock file unless the caller passes
+  `{ 'update-lock': false }`, on the drift path as well as the first run. It used
+  to write on a first run and stay silent on a drift run, because the drift path
+  read the key as a plain boolean and a caller building options by hand has
+  neither the flag nor the parser default. The CLI is unaffected: it sets the key
+  either way.
+
+- `resolveManifestVersions` moved from `src/cli.mjs` to `src/manifest.mjs`, where
+  the rest of the manifest reading lives, and is re-exported from `cli.mjs` so
+  the public surface is unchanged. The migration lane needed it and importing it
+  from the CLI would have made a cycle.
+
+### Fixed
+
+- `guard --no-update-lock` wrote the lock file anyway on the very first run, when
+  there was nothing to update yet. The README said the flag leaves the lock file
+  untouched, so a lint job that asked for a report got a file to decide about.
+  It now writes nothing, says so, and still reports the baseline it observed;
+  `--json` gained a `written` boolean, on the drift payload as well as the
+  baseline one, so a reader can tell a report from a recorded run, and the step
+  summary no longer says the tools were "locked in" a file that does not exist.
+
+- A workflow whose `runs-on:` is a matrix expression had every label-shaped word
+  in the file read as a runner it asks for, including the ones in comments, in
+  `run:` scripts and in step names. That put retirement and migration
+  annotations on lines nobody can act on, and, once the migration lane existed,
+  could attribute a runner's image to a label the repo never uses. Comments,
+  block scalars and the prose keys (`run`, `name`, `if`) are now skipped, and a
+  prose key takes the indented lines below it with it, since a plain scalar
+  wraps onto them as readily as a `|` block does. The
+  rest of the file is still read, because a label reaches `runs-on:` through a
+  `workflow_call` input default or an `env:` value as well as through `matrix:`.
+
+- A trailing comment on a `runs-on:` line was part of the label:
+  `runs-on: ubuntu-latest  # floating on purpose` parsed as the whole string, so
+  the line was not a floating site and the migration lane had nothing to say
+  about it. Both scanners strip the comment first.
+
+- The step summary on a drift run said "Lock file `x` updated to image `y`"
+  under `--no-update-lock`, which had left the file alone. It now says the file
+  was left where it was, and why.
+
+- The line that credits the migration for the tool drift followed the same job
+  rule as the annotations only by label. A matrix leg that names the new image
+  itself, next to the floating label, was GitHub moving you; now it is your own
+  pin, and the line is withheld.
+
+- A key at the job indent under a *later* top-level block was recorded as a job
+  id. `x-templates:` after the jobs map, with a `build:` under it, produced
+  `runs-on:` sites labelled as job `build`, which is a real job id in the same
+  file. A fabricated id can match `GITHUB_JOB`, so it could have pointed the
+  migration lane at the wrong `runs-on:` line. The map now ends where YAML ends
+  it, at the next top-level key.
+
+- The line that credits the migration for tool drift read `direct` without a job
+  id, so a repo with one job on `ubuntu-latest` and another pinned to
+  `ubuntu-26.04` was told GitHub moved it when the pinned job was the one that
+  ran. With no `GITHUB_JOB` either job explains the image, and the lane that
+  attributes `ImageOS` has always said so. Now both do.
+
+- Every countdown said "(1 days)" on the last day before the date it counts to,
+  including the annotation titles and the retirement lane's "1 days left".
+
+- `--tools constructor`, or a lock file with a tool of that name, crashed in the
+  manifest resolver: the candidate-names table answered with a function, and a
+  function is not a list of names. Every table keyed by a tool or a command reads
+  as data now, like the label ones. That includes the three the scanner and the
+  prober use, so a `run:` step calling conda's `constructor` CLI, or a
+  `uses: constructor@v1`, no longer becomes a detected tool whose probe recipe
+  is a function.
+
+- A manifest read that failed was remembered as failed. The run reads each
+  manifest once, and the memo held the rejected promise, so the lane that asked
+  second got the first one's network error without a request of its own. A 502
+  in the migration lane could have left the drift lane with no manifest at all,
+  which reads as every locked tool having been removed. Only a read that worked
+  is kept.
+
+- A refused or rate-limited attribution lookup took the manifest read down with
+  it. Pinning the manifest to the commit that shipped this exact image version
+  is an improvement on the label's current readme, not a prerequisite, but both
+  sat in one `try`, so a 403 left every manifest-only tool unobserved and the
+  diff reported each of them as REMOVED, which is MAJOR. `--fail-on major` red
+  the build over a rate limit. The readme fallback now runs whatever the API
+  did.
+
+- A tool nothing could observe was still diffed as REMOVED. When both manifest
+  reads fail, every manifest-only tool in the lock was warned about as skipped
+  and then reported as removed in the same run, so `--fail-on major` red the
+  build over an `ECONNRESET` even with the readme fallback in place. Unobserved
+  is not removed: those tools are left out of the diff, and they keep the entry
+  the lock already has so the next run does not read them as added either.
+
+  A tool the manifest did answer for, by not listing it, is the same case when
+  nothing else could have seen it: with no probe recipe the readme is its only
+  observer, and the readme is a curated page whose headings get renamed. Those
+  are left out of the diff too. A tool that does have a probe recipe was looked
+  for on the machine and not found, so a manifest that does not list it either
+  is still reported as REMOVED. `--json` names everything left out under
+  `notCompared`, since the `diffs` array would otherwise be quietly shorter than
+  the lock with the reason only on stdout.
+
+- A job id the run could not be placed by let one workflow file speak for
+  another. Inside a reusable workflow `GITHUB_WORKFLOW_REF` names the caller,
+  so the job is matched on its id alone, and an id is unique in a file rather
+  than in a repository. A `build` job pinned to `ubuntu-26.04` in `release.yml`
+  could not veto the `build` job on `ubuntu-latest` in `ci.yml`, because only a
+  matrix leg counted as a rival explanation. A run that cannot be placed in one
+  file now treats any job of that id pinned to the observed image as the nearer
+  explanation, exactly as it does when there is no job id at all, and says so
+  rather than reporting the label as migrated.
+
+- A repo with no tools to watch exited 2 from `guard` before the retirement and
+  migration gates could report, so the annotation was printed, the reason line
+  was not, and CI saw a usage error instead of a failed check. Both gates read
+  the workflow files rather than the tool list, so they now report and decide the
+  exit code; the advice about `--tools` is still printed.
+
+- A manifest header field one side does not publish was reported as a removal.
+  `plan --from ubuntu-24.04 --to windows-2025` said the kernel and systemd had
+  gone, in MAJOR red, when Windows manifests simply have no such line.
+
+- A run that could not be placed in a file took a plain `runs-on: ubuntu-latest`
+  from any file with a job of the same id. Two `build` jobs, one on
+  `ubuntu-latest` and one on `windows-latest`, and a run reporting a caller the
+  scan does not hold: the Windows runner's image was attributed to
+  `ubuntu-latest` and reported as an image nobody announced, an `::error` that
+  fails at any threshold, annotated on a workflow the run never touched. A job id
+  that names jobs in files which do not all ask for the label now settles
+  nothing, and the run says so.
+
+- With no `GITHUB_JOB`, a matrix leg that can be scheduled onto the observed
+  image was reported as a workflow asking for it by name.
+
+- A `uses:` job passing a runner label to a reusable workflow lost it whenever
+  the file also had a matrix job. Such a job has no `runs-on:` of its own, so the
+  `with:` value is the only record of the runner the file asks for, and the
+  retirement lane stopped naming it.
+
+- One matrix job let every label-shaped value in the file speak for the job it
+  sat in. The fallback is a token scan, so a sibling job pinned to
+  `runs-on: ubuntu-latest` with an `env:` naming `ubuntu-26.04` looked like a job
+  reaching the floating label through a matrix with a rival leg: the runner's own
+  image was discarded and `--fail-on-migration` failed a runner that had already
+  moved. A job whose `runs-on:` is a plain label is scheduled by that label and
+  takes nothing from the fallback. The retirement lane stops annotating those
+  `env:` values as pinned images too.
+
+- A matrix axis called `name`, `run` or `if` was read as prose and dropped, so a
+  `runs-on: ${{ matrix.name }}` over image labels found nothing. Under `matrix:`
+  every key is a dimension the job varies over, and the prose keys only hold
+  prose outside it.
+
+- A job called `matrix` turned off the prose keys for its whole body, since the
+  scan matched the key name anywhere. Only `strategy.matrix` is a matrix now, so
+  a step title in that job is prose like any other.
+
+- Running both lint lanes with no workflow directory reported the one missing
+  directory twice. The scan is memoized for the run, and the notice is too.
+
+- A workflow title mentioning a label was read as a runner the workflow asks
+  for. `run-name: nightly build on ubuntu-22.04` annotated the title line with a
+  retirement `::error` for an image the file never uses, as did an input's
+  `description:`. Both are prose keys now, alongside `run`, `name` and `if`.
+  This one predates 1.4.0: the unfiltered scan read them the same way.
+
+- A label written under a key named `name`, `run` or `if` was dropped even when
+  that key held a map rather than prose. 1.4.0 taught the matrix fallback to skip
+  the keys that hold shell and titles, and an empty one swallowed everything
+  indented under it, so a `workflow_call` input called `name` took its `default:`
+  with it and both `--fail-on-retirement` and `--fail-on-migration` went silent
+  for that file. An empty prose key now only owns a body that is not itself a
+  map.
+
+- `--as-of` accepted a date `Date.parse` reads in local time, which is the
+  off-by-a-day the flag normalises to UTC to avoid: `--as-of "Oct 19 2026"`
+  measured from the 18th east of Greenwich. It takes ISO dates and date-times
+  now, with or without a zone, and refuses the rest.
+
+- The migration step-summary table badged the phase, not the outcome, so a runner
+  still serving the old image after the window closed showed `✅ settled` in the
+  row beside its own `::error`. The column is headed Status now and names the
+  state: moved early, not yet, in window, migrated, settled, stale, unexpected.
+
+- A `runs-on:` taken from an expression resolved outside the jobs map lost its
+  job. A `workflow_call` input default and a top-level `env:` value both sit
+  above `jobs:`, so the line the label was read from carried no job id, and with
+  `GITHUB_JOB` set the runner's image was discarded with the note that the job
+  had not run on the floating label. On a reusable build workflow that had
+  already migrated, `--fail-on-migration` reddened the build for the whole
+  rollout month, and only when run inside a job, which read as flakiness. Such a
+  label now belongs to every job whose `runs-on:` is an expression.
+
+- The same sentence was used when this run's own job asks for the floating label
+  outright and the namesake job reaches the observed image through a matrix. It
+  claimed a matrix this job does not have and a pin the other one does not have.
+  A namesake is now described by what it can be scheduled onto when it is not a
+  plain pin.
+
+- A job that reaches the floating label through its own matrix was explained as
+  two workflows sharing a job id whenever the run could not be placed in a file,
+  which is every run with no `GITHUB_WORKFLOW_REF` and every run inside a
+  reusable workflow. Withholding the image was right, the sentence was not: a
+  namesake job now has to ask for the observed label with a plain `runs-on:`
+  before it is named as one.
+
+- Mid-migration, the drift lane attributed the change to the wrong image's
+  history. A lock recorded on `ubuntu-24.04` and a runner on `ubuntu-26.04` are
+  two operating systems, but guard looked the locked image version up in the
+  26.04 commit list, found nothing, and fell back to the nearest 26.04 commit,
+  so every moved tool was stamped with a commit that did not ship it. The header
+  had the same shape: `ubuntu-26.04 image 20260720.247.2 -> 20260907.131.1`,
+  where the first version is a 24.04 image. A run whose label moved names both
+  labels now and attributes nothing, in the log, the step summary and `--json`,
+  which gained `fromLabel`.
+
+- A tool named after a property of `Object` crashed the drift diff. The maps the
+  diff is built from are keyed by tool name, which comes from the lock file,
+  `--tools` or the scanner, and they were plain objects: `'constructor' in
+  lockedMap` was true, `diffTool` got a function where a version list belongs,
+  and guard exited 2 with a report-this-bug prompt. The attribution map had the
+  same hole and was the next line to crash. Those maps have no prototype now,
+  and the two that arrive as arguments to a public function are read as data,
+  so such a tool diffs like any other. `__proto__` was worse than a crash: the
+  entry was silently dropped on the way in, so a locked tool of that name was
+  never compared at all.
+
+- Every table keyed by a runner label answered `__proto__` and `constructor`
+  with something truthy, so `plan --from constructor` took the resolved-migration
+  branch and then reported that `--from` was missing. `deadlineFor`,
+  `pathForLabel`, `migrationFor`, `nextBrownout` and `retirementStatus` all read
+  their tables as data now. The last two returned a deadline with no migration
+  targets, and `guard --fail-on-retirement` crashed writing the annotation that
+  tells you where to move.
+
+- `ImageOS=__proto__` resolved to a label. The env value indexed the
+  `ImageOS` -> label table directly, so any property of `Object.prototype` came
+  back truthy, and the migration lane called it an image nobody announced:
+  `::error`, exit 1, and a summary cell containing a function body. The lookup
+  is an own-key check now, in one place both lanes use.
+
+- A job id that two workflow files both use was told apart by the file only when
+  the scan happened to hold a pinned site in the file this run came from. The
+  migration lane handed the ownership rule the pinned sites and one floating
+  label's, so a `build` job on `windows-latest` in `release.yml` could claim the
+  `build` job on `ubuntu-latest` in `ci.yml`, and report an image from outside
+  the window: an `::error` and a failed build, in a repo where nothing was wrong.
+
+- A job running inside a reusable workflow had its image discarded. Actions
+  reports the *calling* workflow in `GITHUB_WORKFLOW_REF` while `GITHUB_JOB` is
+  the id inside the callee, and the scan matched the file first, so the real
+  `runs-on:` line was rejected as somebody else's job. The job id now decides,
+  and the file is only used to break a tie when the caller has a job of the same
+  name.
+
+- With no `GITHUB_JOB` to scope to, a runner's image was read as evidence about
+  the floating label whenever it was one of the two the window names, even
+  though a sibling job pinned to that exact image explains it just as well. A
+  repo with a `compat:` job on `ubuntu-26.04` could report `ubuntu-latest` as
+  migrated a fortnight early. Any `runs-on:` naming the observed image now takes
+  the evidence away, and the note that used to assert "this check did not run on
+  ubuntu-latest", which nothing in that case knew, says what is actually missing.
+
+- `guard --fail-on-migration` diffed the tools named in the workflow files even
+  when the lock file listed a different set. The drift lane has always preferred
+  the lock, since that is the list it is about to compare. Both lanes now read
+  `--tools`, then the lock, then the scan.
+
+[1.4.1]: https://github.com/Booyaka101/runner-drift/releases/tag/v1.4.1
+[1.4.0]: https://github.com/Booyaka101/runner-drift/releases/tag/v1.4.0
+
 ## [1.3.0] — 2026-09-13
 
 ### Added

@@ -34,12 +34,12 @@ import {
 } from '../src/report.mjs';
 import { detect } from '../src/detect.mjs';
 import { runRunners, runGuard, EXIT_OK, EXIT_DRIFT, EXIT_USAGE } from '../src/cli.mjs';
-import { captureIO, readRunnerFixtures, runnerRoutes, stubApi, FIXTURES } from './helpers.mjs';
+import { captureIO, FIXTURES, jsonOf, readRunnerFixtures, runnerRoutes, stubApi } from './helpers.mjs';
 
 /**
  * Every date below comes from the recorded live responses in
  * test/fixtures/runners/deprecations-recorded.json. At this instant:
- *   2.335.1 runtime ends 2026-09-24 -> 16 days  (RUNTIME-DUE inside 30)
+ *   2.335.1 runtime ends 2026-09-24 -> 15 days  (RUNTIME-DUE inside 30)
  *   2.336.0 runtime ends 2026-11-05 -> 57 days  (OK)
  *   2.337.0 runtime null                        (OK, current)
  *   2.325.0 runtime ended 2025-09-11            (EXPIRED)
@@ -226,7 +226,7 @@ test('runtime inside the window is RUNTIME-DUE', () => {
     now: NOW,
   });
   assert.equal(c.status, RUNNER_STATUS.RUNTIME_DUE);
-  assert.equal(c.runtime.days, 16);
+  assert.equal(c.runtime.days, 15);
   assert.equal(c.runtime.date, '2026-09-24');
   assert.equal(c.runtime.past, false);
 });
@@ -314,7 +314,7 @@ test('the worked example: two image-pinned runners due, one current', async () =
   assert.equal(due.count, 2);
   assert.equal(due.imagePinned, true);
   assert.equal(due.runtime.date, '2026-09-24');
-  assert.equal(due.runtime.days, 16);
+  assert.equal(due.runtime.days, 15);
   assert.equal(due.source, 'GET /orgs/acme/actions/runners/deprecations/2.335.1');
 
   assert.equal(ok.status, RUNNER_STATUS.OK);
@@ -678,7 +678,7 @@ test('the report reproduces the worked example', async () => {
   const lines = text.split('\n');
   assert.equal(lines[0], 'self-hosted runners — acme (3 runners, 2 versions)');
   assert.match(lines[1], /^ {2}RUNTIME-DUE {3}2\.335\.1 {2}x2 {2}arc-linux-1, arc-linux-2$/);
-  assert.match(text, /runtime support ends 2026-09-24 \(16 days\) — jobs stop being queued/);
+  assert.match(text, /runtime support ends 2026-09-24 \(15 days\) — jobs stop being queued/);
   assert.match(text, /ephemeral runners — change the actions-runner-controller image tag, not the host/);
   assert.match(text, /^ {2}OK {12}2\.337\.0 {2}x1 {2}build-mac-1 {2}\(published 2026-08-26\)$/m);
   assert.match(text, /^note: self-hosted runners auto-update by default/m);
@@ -735,7 +735,7 @@ test('an expired runner reads in the past tense', async () => {
   const s = await survey(fleets.expired, { days: 30, failOn: false });
   const text = runnersReport(s);
   assert.match(text, /EXPIRED/);
-  assert.match(text, /runtime support ended 2025-09-11 \(362 days ago\) — jobs are no longer queued to it/);
+  assert.match(text, /runtime support ended 2025-09-11 \(363 days ago\) — jobs are no longer queued to it/);
 });
 
 test('the unknown-version report echoes the version and the 2.329.0 floor', () => {
@@ -821,7 +821,7 @@ test('the step summary tables the fleet, with the notes and citation underneath'
   );
   assert.equal(
     md.split('\n').find((l) => l.startsWith('| `2.335.1`')),
-    '| `2.335.1` | x2 arc-linux-1, arc-linux-2 | 🟠 RUNTIME-DUE | 2026-09-24 (16 days) | — | `2.337.0` |',
+    '| `2.335.1` | x2 arc-linux-1, arc-linux-2 | 🟠 RUNTIME-DUE | 2026-09-24 (15 days) | — | `2.337.0` |',
   );
   assert.equal(
     md.split('\n').find((l) => l.startsWith('| `2.337.0`')),
@@ -849,7 +849,7 @@ test('runners exits 1 on the due fleet with --fail-on-deprecation 30', async () 
   assert.match(r.stdout, /RUNTIME-DUE {3}2\.335\.1/);
   assert.match(
     r.stderr,
-    /^runner-drift: 2 self-hosted runner\(s\) on 2\.335\.1 lose runtime support on 2026-09-24 \(16 days\) and --fail-on-deprecation 30 is set\.$/m,
+    /^runner-drift: 2 self-hosted runner\(s\) on 2\.335\.1 lose runtime support on 2026-09-24 \(15 days\) and --fail-on-deprecation 30 is set\.$/m,
   );
 });
 
@@ -867,7 +867,7 @@ test('runners exits 0 on the current fleet, and on the due fleet without the fla
 test('runners exits 1 on an expired runner even without the flag', async () => {
   const r = await runners({ org: 'acme' }, {}, fleets.expired);
   assert.equal(r.code, EXIT_DRIFT);
-  assert.match(r.stderr, /lost runtime support on 2025-09-11 \(362 days ago\) — jobs are no longer queued/);
+  assert.match(r.stderr, /lost runtime support on 2025-09-11 \(363 days ago\) — jobs are no longer queued/);
 });
 
 test('runners exits 2 when --repo and --org are both given', async () => {
@@ -930,7 +930,7 @@ test('runners --repo defaults to $GITHUB_REPOSITORY', async () => {
 test('runners --json shapes the whole survey', async () => {
   const r = await runners({ org: 'acme', 'fail-on-deprecation': '30', json: true });
   assert.equal(r.code, EXIT_DRIFT);
-  const parsed = JSON.parse(r.stdout.slice(r.stdout.indexOf('{')));
+  const parsed = jsonOf(r.stdout);
   assert.equal(parsed.status, 'OK');
   assert.equal(parsed.scope.name, 'acme');
   assert.equal(parsed.windowDays, 30);
@@ -938,7 +938,7 @@ test('runners --json shapes the whole survey', async () => {
   assert.equal(parsed.groups[0].status, 'RUNTIME-DUE');
   // --json keeps the full timestamp; the text report trims it to a date.
   assert.equal(parsed.groups[0].runtime.at, '2026-09-24T15:30:55Z');
-  assert.equal(parsed.groups[0].runtime.days, 16);
+  assert.equal(parsed.groups[0].runtime.days, 15);
   // Fleet health rides along for automation even though the text report only
   // surfaces the offline count.
   assert.equal(parsed.groups[0].online, 2);
@@ -1015,7 +1015,7 @@ test('guard with a token reports this runner\'s own dates after the skip', async
   assert.match(r.stdout, /::warning title=runner-drift: runner 2\.335\.1 RUNTIME-DUE::/);
   assert.match(r.stdout, /^self-hosted runners — acme \(1 runner, 1 version\)$/m);
   assert.match(r.stdout, /RUNTIME-DUE {3}2\.335\.1 {2}x1 {2}arc-linux-1/);
-  assert.match(r.stdout, /runtime support ends 2026-09-24 \(16 days\)/);
+  assert.match(r.stdout, /runtime support ends 2026-09-24 \(15 days\)/);
   // Only this runner was looked up, not the whole fleet's other version.
   const lookups = r.calls.filter((u) => u.includes('/deprecations/'));
   assert.deepEqual(lookups.map((u) => u.split('/deprecations/')[1]), ['2.335.1']);
@@ -1028,7 +1028,7 @@ test('guard --fail-on-deprecation fails on its own runner', async () => {
   );
   assert.equal(r.code, EXIT_DRIFT);
   assert.match(r.stdout, /::error title=runner-drift: runner 2\.335\.1 RUNTIME-DUE::/);
-  assert.match(r.stderr, /1 self-hosted runner\(s\) on 2\.335\.1 lose runtime support on 2026-09-24 \(16 days\)/);
+  assert.match(r.stderr, /1 self-hosted runner\(s\) on 2\.335\.1 lose runtime support on 2026-09-24 \(15 days\)/);
 });
 
 test('guard on a current self-hosted runner passes', async () => {
@@ -1069,7 +1069,7 @@ test('guard --json carries the runners block on the self-hosted path', async () 
     { org: 'acme', 'fail-on-deprecation': '30', json: true },
   );
   assert.equal(r.code, EXIT_DRIFT);
-  const parsed = JSON.parse(r.stdout.slice(r.stdout.indexOf('{')));
+  const parsed = jsonOf(r.stdout);
   assert.equal(parsed.runners.groups[0].version, '2.335.1');
   assert.equal(parsed.runners.groups[0].status, 'RUNTIME-DUE');
   assert.equal(parsed.runners.totalCount, 1);
@@ -1170,7 +1170,7 @@ test('a due group names the jobs it serves, and annotates the runs-on line', asy
   assert.match(onFile[0], /serve this job \(arc-linux-1, arc-linux-2\)/);
   // The annotation is already on that line, so it does not repeat it.
   assert.ok(!onFile[0].includes('serves '), 'no redundant location in the message');
-  assert.match(onFile[0], /runtime support ends 2026-09-24 \(16 days\)/);
+  assert.match(onFile[0], /runtime support ends 2026-09-24 \(15 days\)/);
 });
 
 /**

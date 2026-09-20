@@ -1,6 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { deadlineLines, daysUntil, annotations, stepSummaryMarkdown, planRow } from '../src/report.mjs';
+import {
+  countdown,
+  dateWithCountdown,
+  deadlineLines,
+  daysUntil,
+  annotations,
+  stepSummaryMarkdown,
+  planRow,
+} from '../src/report.mjs';
 import { diffTool } from '../src/diff.mjs';
 
 const NOW = new Date('2026-08-05T00:00:00Z');
@@ -32,6 +40,15 @@ test('macos-14 has its own deadline and brownout schedule', () => {
 
 test('a label with no announced deadline returns null', () => {
   assert.equal(deadlineLines('ubuntu-24.04', NOW), null);
+});
+
+test('the countdown says one day, not 1 days', () => {
+  assert.equal(countdown(1), '(1 day)');
+  assert.equal(countdown(-1), '(1 day ago)');
+  assert.equal(countdown(0), '(0 days)');
+  assert.equal(countdown(2), '(2 days)');
+  assert.equal(countdown(null), '');
+  assert.equal(dateWithCountdown('2026-10-19T00:00:00Z', 1), '2026-10-19 (1 day)');
 });
 
 test('daysUntil counts down and then up', () => {
@@ -67,6 +84,15 @@ test('annotations name the tool, the change and the shipping commit', () => {
   assert.match(line, /^::warning title=runner-drift: Python minor::/);
   assert.match(line, /Python drifted on ubuntu-22\.04: 3\.10\.12 -> 3\.12\.3 \(MINOR\)/);
   assert.match(line, /shipped by 20260720\.234\.2/);
+});
+
+test('a tool named after a property of Object has no attribution, not a fake one', () => {
+  const diffs = [diffTool('constructor', ['1.0.0'], ['2.0.0'])];
+  const [line] = annotations(diffs, {}, 'ubuntu-22.04');
+  assert.match(line, /constructor drifted on ubuntu-22\.04: 1\.0\.0 -> 2\.0\.0/);
+  assert.doesNotMatch(line, /shipped by/);
+  const md = stepSummaryMarkdown({ label: 'ubuntu-22.04', imageVersion: '20260720.234.2', diffs });
+  assert.match(md, /`constructor`/);
 });
 
 test('unchanged tools produce no annotations', () => {
