@@ -9,6 +9,50 @@ const WORKFLOWS = path.join(FIXTURES, 'workflows');
 // Pinned so the countdown line is deterministic.
 const NOW = new Date('2026-08-05T00:00:00Z');
 
+test('plan compares Xcode inventory to either alias with automatic or explicit tools', async () => {
+  for (const label of ['xcode-27', 'xcode-27-xlarge']) {
+    for (const tools of [undefined, 'Xcode']) {
+      const r = await plan({ from: 'macos-15', to: `"${label.toUpperCase()}"`, tools,
+        workflows: path.join(FIXTURES, 'workflows-xcode'), json: true });
+      assert.equal(r.code, EXIT_OK);
+      const j = JSON.parse(r.stdout);
+      assert.deepEqual(j.tools, ['Xcode']);
+      assert.equal(j.to, label);
+      assert.deepEqual(j.diffs[0].to.sort(), ['27.0', '27.1', '27.2']);
+    }
+  }
+});
+
+test('plan between Xcode aliases has unchanged inventory and no artificial tool diff', async () => {
+  const r = await plan({ from: 'xcode-27', to: 'xcode-27-xlarge', tools: 'Xcode', json: true });
+  assert.equal(r.code, EXIT_OK);
+  assert.deepEqual(JSON.parse(r.stdout).diffs, []);
+  assert.deepEqual(JSON.parse(r.stdout).unchanged, ['Xcode']);
+});
+
+for (const [from, to] of [['xcode-27', 'xcode-27-xlarge'], ['xcode-27-xlarge', 'xcode-27'],
+  ['xcode-27', 'xcode-27']]) {
+  test(`plan ${from} to ${to} uses one consistent manifest snapshot`, async () => {
+    const cap = captureIO();
+    const calls = [];
+    const code = await runPlan({ from, to, tools: 'Xcode', json: true }, cap.io, {
+      now: NOW,
+      loadManifest: async (label) => {
+        calls.push(label);
+        const manifest = await loadFixtureManifest(label);
+        return calls.length === 1 ? manifest : { ...manifest, imageVersion: '20261023.0307.1', tools: { Xcode: ['28.0'] } };
+      },
+    });
+    assert.equal(code, EXIT_OK);
+    const j = JSON.parse(cap.stdout);
+    assert.equal(j.from, from);
+    assert.equal(j.to, to);
+    assert.equal(j.fromImage, j.toImage);
+    assert.deepEqual(j.diffs, []);
+    assert.deepEqual(calls, [from]);
+  });
+}
+
 async function plan(opts) {
   const cap = captureIO();
   const code = await runPlan(

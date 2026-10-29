@@ -17,6 +17,195 @@ import { canonicalTool, manifestCandidates } from '../src/tools.mjs';
 import { isProbeable, probeTool } from '../src/probe.mjs';
 import { FIXTURES } from './helpers.mjs';
 
+for (const label of ['xcode-27', 'xcode-27-xlarge']) {
+  for (const target of [
+    `"${label.toUpperCase()}"`,
+    `[ '${label}' ]`,
+    `\n      - '${label}'`,
+    `\n      group: apple\n      labels: '${label}'`,
+    `\n      group: apple\n      labels: [ '${label}' ]`,
+    `\n      group: apple\n      labels:\n        - '${label}'`,
+  ]) {
+    test(`Xcode target ${JSON.stringify(target)}`, () => {
+      const y = `jobs:\n  build:\n    runs-on: ${target}\n    steps:\n      - run: xcodebuild -version\n`;
+      const scan = analyseWorkflow(y);
+      assert.deepEqual(scan.labels, [label]);
+      assert.deepEqual(scan.tools, ['Xcode']);
+      assert.equal(scan.labelSites[0].job, 'build');
+      assert.equal(scan.labelSites[0].label, label);
+    });
+  }
+}
+
+test('Xcode matrix fallback retains job scoping and ignores prose and shell', () => {
+  const y = [
+    'name: xcode-99',
+    '# xcode-98',
+    'jobs:',
+    '  apple:',
+    '    strategy:',
+    '      matrix:',
+    '        os: ["XCODE-27", \'xcode-27-xlarge\']',
+    '    runs-on:',
+    '      labels: ${{ matrix.os }}',
+    '    steps:',
+    '      - name: xcode-97',
+    '        run: |',
+    '          echo xcode-96',
+    '          # xcrun --version',
+    '  linux:',
+    '    runs-on: ubuntu-24.04',
+    '    env:',
+    '      OTHER: xcode-95',
+  ].join('\n');
+  const sites = extractLabelSites(y);
+  assert.deepEqual(sites.filter((s) => s.job === 'apple').map((s) => s.label).sort(),
+    ['xcode-27', 'xcode-27-xlarge']);
+  assert.deepEqual(sites.filter((s) => s.job === 'linux').map((s) => s.label), ['ubuntu-24.04']);
+  assert.deepEqual(analyseWorkflow(y).labels.sort(), ['ubuntu-24.04', 'xcode-27', 'xcode-27-xlarge']);
+  assert.deepEqual(analyseWorkflow(y).tools, []);
+});
+
+test('self-hosted matrix values use the same comment, prose and job scope as image labels', () => {
+  const workflow = (value, extra = '') => [
+    'jobs:',
+    '  build:',
+    '    strategy:',
+    '      matrix:',
+    `        os: [${value}]`,
+    '    runs-on: ${{ matrix.os }}',
+    extra,
+  ].join('\n');
+  assert.deepEqual(extractLabels(workflow('"SELF-HOSTED"')), ['self-hosted']);
+  for (const extra of ['    # - self-hosted', '    name: - self-hosted',
+    '    steps:\n      - run: echo - self-hosted',
+    '  other:\n    runs-on: ubuntu-latest\n    env:\n      os: self-hosted']) {
+    assert.deepEqual(extractLabels(workflow('xcode-27', extra)),
+      extra.includes('runs-on: ubuntu-latest') ? ['ubuntu-latest', 'xcode-27'] : ['xcode-27'], extra);
+  }
+});
+
+test('Xcode commands, not prose, select manifest-only inventory', () => {
+  for (const command of ['xcodebuild -version', 'xcrun --sdk macosx clang',
+    'env DEVELOPER_DIR=/Applications/Xcode.app sudo xcodebuild test',
+    '"/usr/bin/XCODEBUILD" -version', "'xcrun' --version"]) {
+    assert.deepEqual(analyseWorkflow(`steps:\n  - run: ${command}\n`).tools, ['Xcode'], command);
+  }
+  assert.deepEqual(analyseWorkflow('name: xcodebuild\nsteps:\n  - run: echo xcrun xcodebuild\n').tools, []);
+  assert.equal(canonicalTool('xCoDe'), 'Xcode');
+  assert.equal(canonicalTool('xcrun'), 'Xcode');
+  assert.deepEqual(manifestCandidates('Xcode'), ['Xcode']);
+  assert.equal(isProbeable('Xcode'), false);
+});
+
+for (const script of [
+  'echo "hello; xcrun is text"',
+  "echo 'hello && xcodebuild is text'",
+  'echo "hello | xcrun is text"',
+  'echo "hello || xcodebuild is text"',
+  '# explanatory text; xcrun --version',
+  'echo ready # then && xcodebuild test',
+  'echo \\; xcrun is text',
+  'echo "escaped \\"; xcrun is text"',
+]) {
+  test(`shell text does not invoke Xcode: ${script}`, () => {
+    assert.deepEqual(commandsInScript(script), []);
+    assert.deepEqual(analyseWorkflow(`steps:\n  - run: |\n      ${script}\n`).tools, []);
+  });
+}
+
+for (const script of [
+  '"/Applications/Xcode RC.app/Contents/Developer/usr/bin/xcodebuild" -version',
+  "'/Applications/Xcode RC.app/Contents/Developer/usr/bin/xcrun' --version",
+  '/Applications/Xcode\\ RC.app/Contents/Developer/usr/bin/xcrun --version',
+  'DEVELOPER_DIR="/Applications/Xcode RC.app" xcodebuild test',
+  'env DEVELOPER_DIR="/Applications/Xcode RC.app" sudo -n xcrun --version',
+  'echo ready & xcodebuild -version',
+  '# a comment; not an invocation\nxcrun --version',
+  'echo "a; b" && xcodebuild -scheme "Main App"',
+  'echo "a | b"\nxcrun --version',
+  ['env \\', '  DEVELOPER_DIR="/Applications/Xcode RC.app" \\', '  xcodebuild -version'].join('\n'),
+]) {
+  test(`quoted and separated shell invocation: ${script}`, () => {
+    const workflow = `steps:\n  - run: |\n${script.split('\n').map((line) => `      ${line}`).join('\n')}\n`;
+    assert.deepEqual(analyseWorkflow(workflow).tools, ['Xcode']);
+  });
+}
+
+test('inline YAML quoting does not remove a shell argument\'s closing quote', () => {
+  for (const run of ['xcodebuild -scheme "Main App"', '"xcodebuild -version"',
+    "'xcrun --version'", 'echo "a; xcrun is text"']) {
+    assert.deepEqual(analyseWorkflow(`steps:\n  - run: ${run}\n`).tools,
+      run.startsWith('echo') ? [] : ['Xcode'], run);
+  }
+});
+
+for (const script of [
+  'echo ready &> xcrun', 'echo ready &>> xcodebuild',
+  'echo ready >& xcrun', 'echo ready 2>& xcodebuild', 'echo ready <& xcrun',
+  'cat <<EOF\nxcodebuild -version\nEOF',
+  "cat <<'EOF'\nxcrun --version\nEOF",
+  'cat <<-EOF\n\txcodebuild test\n\tEOF',
+  'cat <<FIRST <<SECOND\nxcrun --version\nFIRST\nxcodebuild test\nSECOND',
+  'cat <<EOF\nxcrun --version',
+]) {
+  test(`shell redirections and here-document data are not invocations: ${script}`, () => {
+    assert.deepEqual(commandsInScript(script), []);
+  });
+}
+
+for (const script of [
+  'cat <<EOF\nxcrun --version\nEOF\nxcodebuild -version',
+  'cat <<-EOF\n\txcrun --version\n\tEOF\nxcodebuild -version',
+  'cat <<"END OF DATA"\nxcrun --version\nEND OF DATA\nxcodebuild -version',
+  'cat <<E"O"F\nxcrun --version\nEOF\nxcodebuild -version',
+  'cat <<\\EOF\nxcrun --version\nEOF\nxcodebuild -version',
+  'cat <<EOF\r\nxcrun --version\r\nEOF\r\nxcodebuild -version',
+  'echo "<<EOF"\nxcodebuild -version',
+  'cat <<< "xcrun"\nxcodebuild -version',
+]) {
+  test(`commands after shell data remain detectable: ${script}`, () => {
+    assert.deepEqual(commandsInScript(script), ['xcodebuild']);
+  });
+}
+
+test('runner-shaped YAML written by a shell step is not a workflow target', () => {
+  const y = [
+    'jobs:',
+    '  build:',
+    '    runs-on: xcode-27',
+    '    steps:',
+    '      - run: |',
+    '          cat <<EOF',
+    '          jobs:',
+    '            other:',
+    '              runs-on: macos-15',
+    '          EOF',
+    '      - run: xcodebuild -version',
+  ].join('\n');
+  const scan = analyseWorkflow(y);
+  assert.deepEqual(scan.labels, ['xcode-27']);
+  assert.deepEqual(scan.labelSites.map((s) => [s.label, s.job]), [['xcode-27', 'build']]);
+  assert.deepEqual(scan.runsOnTargets.map((s) => s.labels), [['xcode-27']]);
+  assert.deepEqual(scan.tools, ['Xcode']);
+});
+
+test('workflow scripts preserve here-document indentation and trailing delimiter spaces', () => {
+  const y = [
+    'steps:',
+    '  - run: |',
+    '      cat <<EOF',
+    '       EOF',
+    '      EOF ',
+    '      xcrun --version',
+    '      EOF',
+    '      xcodebuild -version',
+    '    env:',
+    '      NOTE: xcrun --version',
+  ].join('\n');
+  assert.deepEqual(commandsInScript(extractRunScripts(y)[0]), ['xcodebuild']);
+});
+
 test('extracts an inline runs-on label', () => {
   assert.deepEqual(extractLabels('jobs:\n  a:\n    runs-on: ubuntu-22.04\n'), ['ubuntu-22.04']);
 });

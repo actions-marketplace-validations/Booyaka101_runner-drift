@@ -13,7 +13,7 @@ import { isFloating, normaliseLabel } from './labels.mjs';
 import { lookup } from './tables.mjs';
 
 const WORKFLOW_EXT = /\.ya?ml$/i;
-const LABEL_SHAPE = /^(ubuntu|windows|macos)-[a-z0-9.-]+$/i;
+const LABEL_SHAPE = /^(ubuntu|windows|macos|xcode)-[a-z0-9.-]+$/i;
 
 export const SELF_HOSTED = 'self-hosted';
 
@@ -48,9 +48,8 @@ export function readScalar(raw) {
  * Every `run:` step in a document: the script text, and the 0-indexed lines the
  * steps occupy, block scalar bodies included.
  *
- * Two consumers, one walk. `extractRunScripts` wants the scripts;
- * `extractUses` wants the line set, because a `uses:` written inside a heredoc,
- * or anywhere else in a shell command, is text and not a reference to anything.
+ * Script extraction wants the text; action and runner detection want the line
+ * set, because YAML written inside a script is data, not workflow configuration.
  *
  * Same linear-time shape as scanRunsOn below, for the same reason. CodeQL did
  * not flag this one, but it was the identical `\s*(.*)$` pattern.
@@ -64,16 +63,18 @@ function scanRunSteps(text) {
     // is two runs over the same class with nothing mandatory between them, so on
     // a long indent that never reaches `run:` the engine tries every way to split
     // the spaces. Requiring the `-` inside the group removes the ambiguity.
-    const m = lines[i].match(/^[ \t]*(?:-[ \t]*)?run:[ \t]*([^\r\n]*)/);
+    const m = lines[i].match(/^([ \t]*(?:-[ \t]*)?)run:[ \t]*([^\r\n]*)/);
     if (!m) continue;
     body.add(i);
-    const baseIndent = indentOf(lines[i]);
-    const inline = m[1].trim();
+    const baseIndent = m[1].length;
+    const inline = m[2].trim();
     if (inline && !/^[|>][-+0-9]*$/.test(inline)) {
-      scripts.push(inline.replace(/^['"]|['"]$/g, ''));
+      const quote = inline[0];
+      scripts.push((quote === '"' || quote === "'") && inline.endsWith(quote) ? inline.slice(1, -1) : inline);
       continue;
     }
     const block = [];
+    let scriptIndent = null;
     for (let j = i + 1; j < lines.length; j++) {
       const l = lines[j];
       if (l.trim() === '') {
@@ -81,7 +82,8 @@ function scanRunSteps(text) {
         continue;
       }
       if (indentOf(l) <= baseIndent) break;
-      block.push(l.trim());
+      scriptIndent ??= indentOf(l);
+      block.push(l.slice(scriptIndent));
       body.add(j);
       i = j;
     }
@@ -95,23 +97,115 @@ export function extractRunScripts(text) {
   return scanRunSteps(text).scripts;
 }
 
+/** The newline ending a here-document, or EOF when it is unterminated. */
+function heredocEnd(text, start, { delimiter, stripTabs }) {
+  while (start < text.length) {
+    const newline = text.indexOf('\n', start);
+    const end = newline === -1 ? text.length : newline;
+    const line = text.slice(start, end).replace(/\r$/, '');
+    if ((stripTabs ? line.replace(/^\t+/, '') : line) === delimiter) return end;
+    start = end + 1;
+  }
+  return text.length;
+}
+
+/** Basic shell words and statement boundaries, without evaluating expansions. */
+function* shellStatements(script) {
+  const text = String(script ?? '');
+  let words = [];
+  let word = '';
+  let started = false;
+  let quote = null;
+  let pendingHeredoc = null;
+  const heredocs = [];
+  const pushWord = () => {
+    if (!started) return;
+    words.push(word);
+    if (pendingHeredoc !== null) {
+      heredocs.push({ delimiter: word, stripTabs: pendingHeredoc });
+      pendingHeredoc = null;
+    }
+    word = '';
+    started = false;
+  };
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const next = text[i + 1];
+    if (ch === '\\' && quote !== "'") {
+      if (next === '\n' || next === '\r' && text[i + 2] === '\n') {
+        i += next === '\r' ? 2 : 1;
+        continue;
+      }
+      // Keep ordinary Windows path separators; only shell metacharacters need
+      // unescaping. Double quotes preserve escapes other than these four.
+      const escapable = quote === '"' ? /["\\$`]/ : /[\s'"\\#;|&]/;
+      if (next && (escapable.test(next) || pendingHeredoc !== null && !quote)) {
+        word += next;
+        started = true;
+        i++;
+        continue;
+      }
+    }
+    if (quote) {
+      if (ch === quote) quote = null;
+      else word += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      started = true;
+      continue;
+    }
+    if (ch === '#' && !started) {
+      const end = text.indexOf('\n', i);
+      i = end === -1 ? text.length : end - 1;
+      continue;
+    }
+    if (ch === '<' && next === '<' && text[i - 1] !== '<' && text[i + 2] !== '<') {
+      pushWord();
+      pendingHeredoc = text[i + 2] === '-';
+      words.push(pendingHeredoc ? '<<-' : '<<');
+      i += pendingHeredoc ? 2 : 1;
+      continue;
+    }
+    const redirectAmp = ch === '&' && (/[<>]/.test(text[i - 1] ?? '') || next === '>');
+    const boundary = /[\r\n;|]/.test(ch) || ch === '&' && !redirectAmp;
+    if (boundary || /\s/.test(ch)) {
+      pushWord();
+      if (boundary && words.length) {
+        yield words;
+        words = [];
+      }
+      if (ch === '\n') {
+        for (const heredoc of heredocs.splice(0)) i = heredocEnd(text, i + 1, heredoc);
+      }
+      continue;
+    }
+    word += ch;
+    started = true;
+  }
+  if (!quote) {
+    pushWord();
+    if (words.length) yield words;
+  }
+}
+
 /** Pull invoked command names out of a shell script body. */
 export function commandsInScript(script) {
   const found = new Set();
-  const statements = String(script ?? '')
-    .split(/\r?\n|&&|\|\||[;|]/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  for (const stmt of statements) {
-    let s = stmt.replace(/^[-@(]+\s*/, '');
-    // Drop leading env assignments and privilege wrappers.
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const next = s.replace(/^(?:sudo(?:\s+-[^\s]+)*|env|time|xargs|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+/, '');
-      if (next === s) break;
-      s = next;
+  for (const words of shellStatements(script)) {
+    words[0] = words[0].replace(/^[-@(]+/, '');
+    let i = 0;
+    while (i < words.length) {
+      const word = words[i];
+      if (word === 'sudo') {
+        i++;
+        while (/^-\S+/.test(words[i] ?? '')) i++;
+      } else if (['env', 'time', 'xargs'].includes(word) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) {
+        i++;
+      } else break;
     }
-    const token = s.split(/\s+/)[0];
+    const token = words[i];
     if (!token) continue;
     const base = token.split(/[\\/]/).pop().replace(/\.(exe|cmd|bat)$/i, '');
     if (lookup(COMMAND_ALIASES, base.toLowerCase())) found.add(base.toLowerCase());
@@ -294,7 +388,7 @@ function matrixLabels(lines) {
       // `run: |` and friends: the body below is shell or prose, not YAML values.
       // A prose key owns its indented lines the same way whether or not it was
       // written with a block marker, since a plain scalar folds over them too.
-      // A dashed key owns the column the dash sits in, so the step's own
+      // A dashed key owns the column after the dash, so the step's own
       // siblings (`env:`, `with:`) are not read as part of the script.
       const value = key[4].trim();
       const owns = key[1].length + (key[2]?.length ?? 0);
@@ -316,7 +410,7 @@ function matrixLabels(lines) {
       }
     }
     for (const tok of text.matchAll(/[A-Za-z][A-Za-z0-9.-]*/g)) {
-      if (LABEL_SHAPE.test(tok[0])) {
+      if (LABEL_SHAPE.test(tok[0]) || tok[0].toLowerCase() === SELF_HOSTED) {
         found.push({ label: tok[0].toLowerCase(), line: i + 1, col: tok.index + 1 });
       }
     }
@@ -332,7 +426,10 @@ function matrixLabels(lines) {
  * it per extractor.
  */
 function walkLabels(text) {
-  const lines = String(text ?? '').split(/\r?\n/);
+  const run = scanRunSteps(text);
+  // A script can write YAML itself. Keep positions, but never scan that data as
+  // the workflow's runs-on values or job ids.
+  const lines = run.lines.map((line, i) => run.body.has(i) ? '' : line);
   const scan = scanRunsOn(lines);
   let matrix = null;
   let jobs = null;
@@ -350,20 +447,11 @@ function walkLabels(text) {
 
 /** Pull `runs-on:` labels (inline scalar, inline flow list, block list, matrix refs). */
 export function extractLabels(text) {
-  return labelsIn(walkLabels(text));
+  return labelsIn(labelSitesWhere(walkLabels(text), null, () => true));
 }
 
-function labelsIn({ lines, found, expression, matrix }) {
-  const labels = new Set(found.map((f) => f.label));
-  if (expression) {
-    for (const { label } of matrix) labels.add(label);
-    for (const line of lines) {
-      if (/(^|\s)self-hosted(\s|$|,|\]|')/.test(line) && /runs-on|matrix|os:|- /.test(line)) {
-        labels.add(SELF_HOSTED);
-      }
-    }
-  }
-  return [...labels];
+function labelsIn(sites) {
+  return [...new Set(sites.map((s) => s.label))];
 }
 
 /**
@@ -668,8 +756,8 @@ export function extractSetupActions(text) {
 /** Analyse one workflow document. */
 export function analyseWorkflow(text, file = null) {
   const walk = walkLabels(text);
-  const labels = labelsIn(walk);
   const sites = labelSitesWhere(walk, file, () => true);
+  const labels = labelsIn(sites);
   const labelSites = sites.filter((s) => isPinned(s.label));
   const floatingSites = sites.filter((s) => isFloating(s.label));
   const runsOnTargets = targetsIn(walk, file);

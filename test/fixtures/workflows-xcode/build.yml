@@ -1,0 +1,5 @@
+jobs:
+  build:
+    runs-on: xcode-27-xlarge
+    steps:
+      - run: xcodebuild -version

@@ -49,7 +49,7 @@ function authHeaders() {
   const token =
     process.env.GITHUB_TOKEN || process.env.GH_TOKEN || process.env.INPUT_GITHUB_TOKEN || '';
   const headers = {
-    'user-agent': 'runner-drift/1.4.1 (+https://github.com/Booyaka101/runner-drift)',
+    'user-agent': 'runner-drift/1.5.0 (+https://github.com/Booyaka101/runner-drift)',
     accept: 'application/vnd.github+json',
   };
   if (token) headers.authorization = `Bearer ${token}`;

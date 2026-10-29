@@ -5,7 +5,33 @@ import {
   compareImageVersions,
   findCommitForImageVersion,
   commitWindow,
+  listManifestCommits,
+  manifestAtSha,
 } from '../src/history.mjs';
+import { readFixture, stubApi } from './helpers.mjs';
+
+test('Xcode history is path-based for both aliases, ordered by numeric image version', async () => {
+  const recorded = JSON.parse(await readFixture('xcode-27-commits-recorded.json'));
+  const body = await readFixture('xcode-27');
+  const api = stubApi((url) => ({ status: 200, body: url.startsWith('https://api.github.com/') ? recorded : body }));
+  try {
+    for (const label of ['xcode-27', 'xcode-27-xlarge']) {
+      const commits = await listManifestCommits(label);
+      assert.deepEqual(commits.map((c) => c.imageVersion), ['20261022.0305.3', '20261023.0307.1']);
+      assert.equal(findCommitForImageVersion(commits, '20261024.1.1').commit.imageVersion, '20261023.0307.1');
+      assert.equal(findCommitForImageVersion(commits, '20261022.0305.3').approximate, false);
+      assert.deepEqual(commitWindow(commits, '20261021.1.1', '20261023.0307.1').map((c) => c.imageVersion),
+        ['20261022.0305.3', '20261023.0307.1']);
+      const m = await manifestAtSha(label, commits[0].sha);
+      assert.deepEqual(m.tools.Xcode, ['27.2', '27.1', '27.0']);
+    }
+    for (const url of api.calls) {
+      assert.ok(url.includes('images%2Fmacos%2Fxcode-27-arm64-Readme.md') || url.endsWith('/images/macos/xcode-27-arm64-Readme.md'));
+    }
+  } finally {
+    api.restore();
+  }
+});
 
 /**
  * Real commit metadata, captured from

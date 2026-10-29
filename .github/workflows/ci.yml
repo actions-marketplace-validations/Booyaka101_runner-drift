@@ -25,6 +25,12 @@ jobs:
         with:
           node-version: '22'
       - run: node --test
+      # Every fixture date is in the past by 2031, so a test reading the real
+      # clock fails here on its own PR rather than on some later scheduled run.
+      - name: node --test, with the clock moved past every fixture date
+        run: node --import ./test/clock.mjs --test
+        env:
+          RUNNER_DRIFT_TEST_NOW: '2031-01-01T00:00:00Z'
       - run: node src/cli.mjs --help
 
       # Two different things, both worth proving.

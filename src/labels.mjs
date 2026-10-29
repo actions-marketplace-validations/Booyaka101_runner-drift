@@ -30,6 +30,8 @@ export const LABEL_PATHS = {
   'macos-15-arm64': 'images/macos/macos-15-arm64-Readme.md',
   'macos-26': 'images/macos/macos-26-Readme.md',
   'macos-26-arm64': 'images/macos/macos-26-arm64-Readme.md',
+  'xcode-27': 'images/macos/xcode-27-arm64-Readme.md',
+  'xcode-27-xlarge': 'images/macos/xcode-27-arm64-Readme.md',
 };
 
 /**
@@ -50,6 +52,7 @@ export const IMAGE_OS_TO_LABEL = {
   macos14: 'macos-14',
   macos15: 'macos-15',
   macos26: 'macos-26',
+  macos27: 'xcode-27',
 };
 
 /**
@@ -141,6 +144,11 @@ export function knownLabels() {
 
 export function pathForLabel(label) {
   return lookup(LABEL_PATHS, label);
+}
+
+export function sameManifestFamily(a, b) {
+  const manifest = pathForLabel(a);
+  return Boolean(manifest) && manifest === pathForLabel(b);
 }
 
 export function deadlineFor(label) {

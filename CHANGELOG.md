@@ -4,6 +4,37 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-10-26
+
+### Added
+
+- Support for `xcode-27` and `xcode-27-xlarge`, sharing the public
+  `images/macos/xcode-27-arm64-Readme.md` inventory and commit history.
+  Runtime `ImageOS=macos27` resolves to this family without changing other
+  macOS mappings. Guard preserves either committed alias, but still identifies
+  moves to a different manifest family.
+- Xcode runner matrix detection and automatic `Xcode` selection for invoked
+  `xcodebuild` and `xcrun` commands. `--tools Xcode` also works. Xcode remains
+  manifest-only: selected defaults, `DEVELOPER_DIR`, SDK contents and optional
+  Metal components are not verified.
+- Offline regressions using a real pinned Xcode manifest and path-specific
+  commit response, including numeric image ordering, drift attribution,
+  thresholds, label identity, and missing-inventory/network failure behavior.
+
+### Fixed
+
+- Quoted executable paths and environment assignments containing spaces are
+  recognized, including `xcodebuild` and `xcrun` invocations. Shell separators
+  inside quoted text or comments, redirection ampersands and here-document
+  bodies no longer create false tool detections.
+- Flat runner labels now use the same job scope as positioned label sites,
+  including self-hosted matrix values. YAML inside shell steps is not scanned
+  as runner configuration; dashed `run:` blocks retain sibling step keys.
+- Unknown Xcode-shaped runner labels report an error rather than being silently
+  discarded during initialization.
+- Plans between aliases sharing one manifest use a single inventory snapshot,
+  preventing false drift when upstream updates between reads.
+
 ## [1.4.1] — 2026-09-20
 
 ### Fixed
@@ -404,6 +435,7 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   the lock, since that is the list it is about to compare. Both lanes now read
   `--tools`, then the lock, then the scan.
 
+[1.5.0]: https://github.com/Booyaka101/runner-drift/releases/tag/v1.5.0
 [1.4.1]: https://github.com/Booyaka101/runner-drift/releases/tag/v1.4.1
 [1.4.0]: https://github.com/Booyaka101/runner-drift/releases/tag/v1.4.0
 

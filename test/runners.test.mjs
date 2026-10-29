@@ -1312,6 +1312,7 @@ test('every documented exit code, end to end through main()', async () => {
     ['a dot for a repo name', fleets.arc, ['--repo', 'a/..'], EXIT_USAGE],
   ];
   const sink = { stdout: { write() {} }, stderr: { write() {} } };
+  const asOf = ['--as-of', NOW.toISOString().slice(0, 10)];
   const savedToken = process.env.GITHUB_TOKEN;
   const savedRepo = process.env.GITHUB_REPOSITORY;
   process.env.GITHUB_TOKEN = 'stub';
@@ -1320,7 +1321,7 @@ test('every documented exit code, end to end through main()', async () => {
     for (const [label, fleet, argv, want] of cases) {
       const api = stubApi(routes(fleet));
       try {
-        assert.equal(await main(['runners', '--no-summary', ...argv], sink), want, label);
+        assert.equal(await main(['runners', '--no-summary', ...asOf, ...argv], sink), want, label);
       } finally {
         api.restore();
       }
@@ -1338,7 +1339,7 @@ test('every documented exit code, end to end through main()', async () => {
       const api = stubApi(routes(fleets.arc, { listing }));
       try {
         assert.equal(
-          await main(['runners', '--no-summary', '--org', 'acme', '--fail-on-deprecation', '30'], sink),
+          await main(['runners', '--no-summary', ...asOf, '--org', 'acme', '--fail-on-deprecation', '30'], sink),
           EXIT_OK,
           `${label} never fails the build by itself`,
         );

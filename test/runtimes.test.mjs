@@ -616,6 +616,8 @@ test('a repository whose actions all survive exits 0', async () => {
 
 test('the action the repository itself publishes is scanned, workflows or not', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'runner-drift-'));
+  const workspace = process.env.GITHUB_WORKSPACE;
+  process.env.GITHUB_WORKSPACE = dir;
   try {
     await writeFile(
       path.join(dir, 'action.yml'),
@@ -635,6 +637,8 @@ test('the action the repository itself publishes is scanned, workflows or not', 
     assert.match(r.stdout, /actions\/checkout@v4 +node20/);
     assert.match(r.stdout, /file=action\.yml,line=5/);
   } finally {
+    if (workspace === undefined) delete process.env.GITHUB_WORKSPACE;
+    else process.env.GITHUB_WORKSPACE = workspace;
     await rm(dir, { recursive: true, force: true });
   }
 });

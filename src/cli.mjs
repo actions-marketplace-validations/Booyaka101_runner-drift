@@ -22,6 +22,7 @@ import {
   migrationFor,
   migrationStatus,
   normaliseLabel,
+  sameManifestFamily,
 } from './labels.mjs';
 import { diffManifestTools, loadManifest, resolveManifestVersions } from './manifest.mjs';
 import { imageDiffs, surveyMigration } from './migration.mjs';
@@ -76,7 +77,7 @@ async function version() {
     const pkg = JSON.parse(await readFile(path.join(HERE, '..', 'package.json'), 'utf8'));
     return pkg.version;
   } catch {
-    return '1.4.1';
+    return '1.5.0';
   }
 }
 
@@ -189,7 +190,7 @@ function concreteLabels(labels) {
     if (l === SELF_HOSTED || isFloating(l)) return false;
     if (known.has(l)) return true;
     if (selfHosted) return false;
-    return /^(ubuntu|windows|macos)-/i.test(l);
+    return /^(ubuntu|windows|macos|xcode)-/i.test(l);
   });
 }
 
@@ -570,7 +571,7 @@ export async function runInit(opts, io = process) {
   const written = await writeLock(
     {
       label,
-      imageOS: Object.keys(IMAGE_OS_TO_LABEL).find((k) => IMAGE_OS_TO_LABEL[k] === label) ?? null,
+      imageOS: Object.keys(IMAGE_OS_TO_LABEL).find((k) => sameManifestFamily(IMAGE_OS_TO_LABEL[k], label)) ?? null,
       imageVersion: manifest.imageVersion,
       tools: lockTools,
       updatedAt: new Date().toISOString(),
@@ -721,7 +722,10 @@ export async function runGuard(opts, io = process, env = process.env, deps = {})
   }
 
   const lock = await getLock();
-  let label = labelForImageOS(imageOS) || lock?.label || null;
+  const observedLabel = labelForImageOS(imageOS);
+  let label = sameManifestFamily(observedLabel, lock?.label)
+    ? lock.label
+    : observedLabel || lock?.label || null;
 
   if (!label) {
     const detected = await scan();
@@ -1055,7 +1059,9 @@ export async function runPlan(opts, io = process, deps = {}) {
     return EXIT_USAGE;
   }
 
-  const [a, b] = await Promise.all([load(from), load(to)]);
+  // Aliases name one image: two main-branch reads can straddle a readme update.
+  const fromManifest = load(from);
+  const [a, b] = await Promise.all([fromManifest, sameManifestFamily(from, to) ? fromManifest : load(to)]);
   for (const m of [a, b]) {
     if (m.skipped) {
       out(io.stderr, m.reason);

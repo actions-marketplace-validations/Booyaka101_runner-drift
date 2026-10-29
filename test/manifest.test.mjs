@@ -1,8 +1,26 @@
 import test from 'node:test';
 import { performance } from 'node:perf_hooks';
 import assert from 'node:assert/strict';
-import { parseManifest, lookupTool, manifestUrl } from '../src/manifest.mjs';
+import { parseManifest, lookupTool, manifestUrl, resolveManifestVersions } from '../src/manifest.mjs';
+import { labelForImageOS, sameManifestFamily, normaliseLabel } from '../src/labels.mjs';
 import { readFixture, loadFixtureManifest } from './helpers.mjs';
+
+test('Xcode aliases share a manifest, not their workflow spelling or other macOS images', async () => {
+  const m = parseManifest(await readFixture('xcode-27'));
+  assert.equal(m.imageVersion, '20261022.0305.3');
+  assert.equal(m.osVersion, 'macOS 27.0.1 (26A434)');
+  assert.deepEqual(m.tools.Xcode, ['27.2', '27.1', '27.0']);
+  assert.deepEqual(resolveManifestVersions(m, ['Xcode']).map.Xcode, ['27.2', '27.1', '27.0']);
+  assert.notDeepEqual(m.tools.Xcode, m.tools['Xcode Command Line Tools']);
+  assert.equal(manifestUrl('xcode-27'), manifestUrl('xcode-27-xlarge'));
+  assert.match(manifestUrl('xcode-27'), /\/images\/macos\/xcode-27-arm64-Readme\.md$/);
+  assert.equal(labelForImageOS('MACOS27'), 'xcode-27');
+  assert.equal(normaliseLabel(' "XCODE-27-XLARGE" '), 'xcode-27-xlarge');
+  assert.equal(sameManifestFamily('xcode-27', 'xcode-27-xlarge'), true);
+  assert.equal(sameManifestFamily('xcode-27', 'macos-26'), false);
+  assert.equal(sameManifestFamily('macos-15', 'macos-15-arm64'), false);
+  assert.equal(sameManifestFamily('unknown', 'unknown'), false);
+});
 
 test('parses the header of a real Ubuntu 22.04 manifest', async () => {
   const m = parseManifest(await readFixture('ubuntu-22.04'), 'ubuntu-22.04');

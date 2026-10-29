@@ -5,7 +5,7 @@ import os from 'node:os';
 import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { loaderFor, runGuard, EXIT_OK, EXIT_DRIFT, EXIT_USAGE } from '../src/cli.mjs';
 import { readLock, writeLock, SCHEMA_VERSION } from '../src/lock.mjs';
-import { captureIO, fixtureLoader, FIXTURES, jsonOf, stubApi } from './helpers.mjs';
+import { captureIO, fixtureLoader, FIXTURES, jsonOf, readFixture, stubApi } from './helpers.mjs';
 
 async function tmp() {
   return mkdtemp(path.join(os.tmpdir(), 'runner-drift-test-'));
@@ -22,6 +22,150 @@ async function guard(opts, env = ENV, deps = {}) {
   const cap = captureIO();
   const code = await runGuard({ summary: true, 'update-lock': true, ...opts }, cap.io, env, deps);
   return { code, stdout: cap.stdout, stderr: cap.stderr };
+}
+
+for (const label of ['xcode-27', 'xcode-27-xlarge']) {
+  for (const [failOn, expected] of [['none', EXIT_OK], ['major', EXIT_OK], ['minor', EXIT_DRIFT], ['any', EXIT_DRIFT]]) {
+    test(`${label} on macos27 retains minor inventory drift attribution under ${failOn}`, async () => {
+      const dir = await tmp();
+      const lockFile = path.join(dir, 'lock.json');
+      const body = await readFixture(label);
+      const commits = JSON.parse(await readFixture('xcode-27-commits-recorded.json'));
+      const api = stubApi((url) => ({ status: 200, body: url.startsWith('https://api.github.com/') ? commits : body }));
+      try {
+        await writeLock({ label, imageOS: 'macos27', imageVersion: '20261021.1.1',
+          tools: { Xcode: { versions: ['27.0', '27.1'], source: 'manifest' } } }, lockFile);
+        const r = await guard({ 'lock-file': lockFile, 'fail-on': failOn, json: true, summary: false },
+          { ImageOS: 'MACOS27', ImageVersion: '20261022.0305.3' });
+        assert.equal(r.code, expected);
+        const j = jsonOf(r.stdout);
+        assert.equal(j.label, label);
+        assert.equal(j.fromLabel, label);
+        assert.equal(j.diffs[0].severity, 'minor');
+        assert.deepEqual(j.diffs[0].added, ['27.2']);
+        assert.equal(j.attribution.Xcode.sha, commits[0].sha);
+        assert.equal(j.attribution.Xcode.exact, true);
+        const after = await readLock(lockFile);
+        assert.equal(after.label, label);
+        assert.equal(after.tools.Xcode.source, 'manifest');
+      } finally {
+        api.restore();
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+  }
+}
+
+for (const [locked, observed, expected] of [
+  [null, 'macos27', 'xcode-27'],
+  ['xcode-27', 'macos27', 'xcode-27'],
+  ['xcode-27-xlarge', 'macos27', 'xcode-27-xlarge'],
+  ['macos-15', 'macos27', 'xcode-27'],
+  ['xcode-27-xlarge', 'macos15', 'macos-15'],
+]) {
+  test(`guard identity ${locked} + ${observed} = ${expected}`, async () => {
+    const dir = await tmp();
+    const lockFile = path.join(dir, 'lock.json');
+    const body = await readFixture(expected);
+    const api = stubApi((url) => ({ status: 200, body: url.startsWith('https://api.github.com/') ? [] : body }));
+    try {
+      if (locked) await writeLock({ label: locked, imageVersion: '20261021.1.1',
+        tools: { Xcode: { versions: ['27.0', '27.1', '27.2'], source: 'manifest' } } }, lockFile);
+      const r = await guard({ tools: 'Xcode', 'lock-file': lockFile, json: true, summary: false },
+        { ImageOS: observed, ImageVersion: '20261022.0305.3' });
+      assert.equal(r.code, EXIT_OK);
+      const j = jsonOf(r.stdout);
+      assert.equal(locked ? j.label : j.lock.label, expected);
+      if (locked) {
+        assert.deepEqual(j.attribution, {});
+        assert.equal(j.fromLabel, locked);
+      }
+      assert.equal((await readLock(lockFile)).label, expected);
+      assert.equal(api.calls.filter((u) => u.startsWith('https://api.github.com/')).length, 1,
+        'observation only: no drift attribution for unchanged inventory or cross-family moves');
+    } finally {
+      api.restore();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const [locked, observed, expected] of [
+  ['macos-15', 'macos27', 'xcode-27'],
+  ['xcode-27-xlarge', 'macos15', 'macos-15'],
+]) {
+  test(`changed Xcode inventory across ${locked} to ${expected} is not an image bump`, async () => {
+    const dir = await tmp();
+    const lockFile = path.join(dir, 'lock.json');
+    const body = await readFixture(expected);
+    const commits = JSON.parse(await readFixture('xcode-27-commits-recorded.json'));
+    const api = stubApi((url) => ({ status: 200, body: url.startsWith('https://api.github.com/') ? commits : body }));
+    try {
+      await writeLock({ label: locked, imageVersion: '20261021.1.1',
+        tools: { Xcode: { versions: ['1.0'], source: 'manifest' } } }, lockFile);
+      const r = await guard({ 'lock-file': lockFile, 'fail-on': 'major', json: true, summary: false },
+        { ImageOS: observed, ImageVersion: '20261022.0305.3' });
+      assert.equal(r.code, EXIT_DRIFT);
+      const j = jsonOf(r.stdout);
+      assert.equal(j.label, expected);
+      assert.equal(j.fromLabel, locked);
+      assert.equal(j.diffs[0].changed, true);
+      assert.deepEqual(j.attribution, {});
+      assert.equal(api.calls.filter((u) => u.startsWith('https://api.github.com/')).length, 1);
+    } finally {
+      api.restore();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+test('an unchanged xlarge baseline reports one label, not an artificial move', async () => {
+  const dir = await tmp();
+  const lockFile = path.join(dir, 'lock.json');
+  const body = await readFixture('xcode-27');
+  const api = stubApi((url) => ({ status: 200, body: url.startsWith('https://api.github.com/') ? [] : body }));
+  try {
+    await writeLock({ label: 'xcode-27-xlarge', imageVersion: '20261022.0305.3',
+      tools: { Xcode: { versions: ['27.0', '27.1', '27.2'], source: 'manifest' } } }, lockFile);
+    const r = await guard({ 'lock-file': lockFile, summary: false },
+      { ImageOS: 'macos27', ImageVersion: '20261022.0305.3' });
+    assert.equal(r.code, EXIT_OK);
+    assert.match(r.stdout, /No drift — xcode-27-xlarge image 20261022\.0305\.3 -> 20261022\.0305\.3, 1 tool\(s\) unchanged/);
+    assert.doesNotMatch(r.stdout, /-> xcode-27 image/);
+  } finally {
+    api.restore();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+for (const failure of ['missing', '404', '503', 'rate limit', 'network']) {
+  test(`Xcode ${failure} remains unobserved and keeps its committed baseline`, async () => {
+    const dir = await tmp();
+    const lockFile = path.join(dir, 'lock.json');
+    const api = stubApi((url) => {
+      if (failure === 'network') throw new TypeError('connection reset');
+      if (url.startsWith('https://api.github.com/')) return { status: 200, body: [] };
+      return { status: failure === 'missing' ? 200 : failure === 'rate limit' ? 429 : Number(failure),
+        body: '# macOS 27\n- Image Version: 20261022.0305.3\n' };
+    });
+    try {
+      await writeLock({ label: 'xcode-27-xlarge', imageOS: 'macos27', imageVersion: '20261021.1.1',
+        tools: { Xcode: { versions: ['27.0', '27.1'], source: 'manifest' } } }, lockFile);
+      const r = await guard({ 'lock-file': lockFile, 'fail-on': 'any', json: true, summary: false },
+        { ImageOS: 'macos27', ImageVersion: '20261022.0305.3' });
+      assert.equal(r.code, EXIT_OK);
+      assert.deepEqual(jsonOf(r.stdout).notCompared, ['Xcode']);
+      assert.deepEqual(jsonOf(r.stdout).diffs, []);
+      assert.match(r.stdout, /::warning/);
+      assert.doesNotMatch(r.stdout, /REMOVED|\n\s+at /);
+      const lock = await readLock(lockFile);
+      assert.equal(lock.label, 'xcode-27-xlarge');
+      assert.deepEqual(lock.tools.Xcode.versions, ['27.0', '27.1']);
+    } finally {
+      api.restore();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 }
 
 test('self-hosted / local: no ImageVersion means a clean skip, exit 0', async () => {

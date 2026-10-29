@@ -588,6 +588,85 @@ Exit 1 if anything will fail, 0 otherwise. `--warn-only` always exits 0, and
 which annotates every failing `uses:` line where it is written, writes a job
 summary table, and sets a `will-fail-count` output.
 
+### 8. Xcode 27 inventory
+
+`xcode-27` and `xcode-27-xlarge` are the arm64 macOS 27 runner labels. Both
+read the same [public image manifest](https://github.com/actions/runner-images/blob/main/images/macos/xcode-27-arm64-Readme.md).
+Invoking `xcodebuild` or `xcrun` in a `run:` step selects the `Xcode` inventory;
+`--tools Xcode` selects it explicitly.
+
+Detection recognizes quoted executable paths and environment assignments with
+spaces. Quoted text, shell comments and here-document bodies do not select
+tools, and YAML written inside a shell script does not add runner targets.
+The scanner does not evaluate shell expansions, dynamic commands or YAML
+expressions; use `--tools Xcode` and `--label` when detection is insufficient.
+
+For example, save this job in `.github/workflows/build.yml`:
+
+```yaml
+jobs:
+  build:
+    runs-on: xcode-27-xlarge
+    steps:
+      - run: xcodebuild -version
+```
+
+Run `runner-drift init` locally, then **commit `runner-lock.json`**. Add the
+guard after checkout in that job, before the build:
+
+```yaml
+      - uses: Booyaka101/runner-drift@v1
+        with:
+          fail-on: minor
+```
+
+Use this with a release containing 1.5.0 or later; the local 1.5.0 candidate is
+not available from npm or the `v1` tag until it is released. A guard that creates
+a new baseline on every ephemeral runner cannot detect drift between runs, so
+check out the committed lock rather than regenerating it in CI.
+
+Real CLI output against the live manifest on 2026-10-26 (Windows path separator):
+
+```text
+$ runner-drift init
+Scanned 1 workflow file(s) in .github\workflows
+Runner label: xcode-27-xlarge (image 20261022.0305.3, macOS 27.0.1 (26A434))
+Locked 1 tool(s): Xcode
+Wrote runner-lock.json
+Next: add the guard step to your workflow (see the README) and commit runner-lock.json.
+```
+
+That lock has `imageOS: "macos27"`, `source: "manifest"`, and the Xcode version
+set `27.0`, `27.1`, `27.2`. On a matching image, `guard --fail-on any
+--no-summary --no-update-lock` reports:
+
+```text
+No drift — xcode-27-xlarge image 20261022.0305.3 -> 20261022.0305.3, 1 tool(s) unchanged.
+```
+
+The guard transcript was verified locally with `ImageOS=macos27` and
+`ImageVersion=20261022.0305.3`, not by buying or launching a macOS job. Runtime
+`macos27` resolves to `xcode-27` without a lock; with a lock it preserves either
+Xcode alias. This equivalence does not apply to other macOS manifest families.
+Comparing the two aliases with `plan` uses one shared manifest snapshot, so a
+concurrent upstream update cannot produce a false difference between them.
+If workflows contain both aliases, pass `init --label xcode-27-xlarge` (or
+`xcode-27`) explicitly and use a separate lock file per chosen label.
+
+Preview the inventory change before moving a macOS job:
+
+```bash
+runner-drift plan --from macos-15 --to xcode-27-xlarge
+runner-drift plan --from macos-15 --to xcode-27 --tools Xcode
+```
+
+**This is installed inventory, not selected-toolchain verification.** Xcode has
+no probe recipe. The manifest does not establish the selected default,
+`DEVELOPER_DIR`, SDK contents, or whether optional Metal components exist. It
+does not claim which Xcode your build executes. Missing Xcode inventory or an
+unreadable manifest is unobserved, not a removal: `guard` warns, lists `Xcode`
+under `notCompared` in JSON, and preserves the existing lock entry.
+
 ## Configuration
 
 ### CLI
@@ -832,11 +911,12 @@ list it either is reported as removed.
 ## Supported labels
 
 `ubuntu-22.04`, `ubuntu-24.04`, `ubuntu-26.04` (+ `-arm`), `windows-2022`,
-`windows-2025`, `macos-14`, `macos-15`, `macos-26` (+ `-arm64`).
+`windows-2025`, `macos-14`, `macos-15`, `macos-26` (+ `-arm64`),
+`xcode-27`, `xcode-27-xlarge` (both arm64, macOS 27).
 
 Deadline data covers the images with an announced retirement date:
 `ubuntu-22.04` (+ arm) and `macos-14` (+ arm64, `-large`, `-xlarge`). The
-large/xlarge labels have no public manifest, so they get the retirement
+macOS 14 large/xlarge labels have no public manifest, so they get the retirement
 countdown and `--fail-on-retirement`, not the tool diff. Every other label
 diffs fine, it just has no countdown.
 
@@ -948,17 +1028,23 @@ date for one.
 ```bash
 git clone https://github.com/Booyaka101/runner-drift
 cd runner-drift
-node --test          # 270 tests, fully offline against recorded real fixtures
+node --test          # fully offline against recorded real fixtures
 ```
 
-Tests run against four **real** manifest snapshots in `test/fixtures/`
-(`Ubuntu2204` at two different image versions, `Ubuntu2404`, `macos-15`), so the
+Tests run against **real** manifest snapshots in `test/fixtures/`
+(`Ubuntu2204` and `Ubuntu2404` at two image versions each, `Ubuntu2604`,
+`macos-15`, and `xcode-27-arm64`), so the
 golden `plan` output is deterministic while the live path re-fetches. The runner
 lane works the same way: `test/fixtures/runners/deprecations-recorded.json` is
 the verbatim live response for eight versions, recorded 2026-09-09, so the dates
 the tests assert on are GitHub's own. The fleet listings alongside it are built
 to the documented schema, because this account owns no self-hosted runners to
 record; the empty listing in the recorded file is real.
+
+The Xcode snapshot is pinned to runner-images commit
+`dd1a667c2b8ff5a9fb907e6087544ec48f0bbc8b` (image `20261022.0305.3`). The
+recorded path-specific commits alongside it intentionally retain API order,
+which differs from numeric image-version order; history tests assert the latter.
 
 The runner tests stub `globalThis.fetch` rather than the module boundary, so
 `src/runners.mjs` is exercised *through* `src/http.mjs` and the 401, 403, 404 and

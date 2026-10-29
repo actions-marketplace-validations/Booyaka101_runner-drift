@@ -13,6 +13,8 @@ export const SNAPSHOTS = {
   'ubuntu-24.04@2026-09': 'Ubuntu2404-Readme-20260907.300.1.md',
   'ubuntu-26.04': 'Ubuntu2604-Readme-20260907.131.1.md',
   'macos-15': 'macos-15-Readme-20260720.0353.1.md',
+  'xcode-27': 'xcode-27-arm64-Readme-20261022.0305.3.md',
+  'xcode-27-xlarge': 'xcode-27-arm64-Readme-20261022.0305.3.md',
 };
 
 export async function readFixture(key) {

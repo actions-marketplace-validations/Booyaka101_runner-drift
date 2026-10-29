@@ -34,6 +34,8 @@ export const COMMAND_ALIASES = {
   mvn: 'Temurin',
   gradle: 'Temurin',
   git: 'Git',
+  xcodebuild: 'Xcode',
+  xcrun: 'Xcode',
 };
 
 /** `uses: actions/setup-*` -> canonical tool */
@@ -57,6 +59,7 @@ export const MANIFEST_CANDIDATES = {
   '.NET Core SDK': ['.NET Core SDK', '.NET SDK'],
   Temurin: ['Temurin', 'Java'],
   Git: ['Git'],
+  Xcode: ['Xcode'],
 };
 
 export function canonicalTool(name) {

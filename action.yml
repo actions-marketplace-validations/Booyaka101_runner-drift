@@ -43,7 +43,7 @@ inputs:
   version:
     description: 'npm version of runner-drift to run.'
     required: false
-    default: '1.4.1'
+    default: '1.5.0'
   package:
     description: 'Override the npm spec, e.g. a local .tgz built in the same job. Mainly for testing this action before the version it requests exists on npm.'
     required: false
